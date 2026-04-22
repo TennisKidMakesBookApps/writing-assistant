@@ -567,7 +567,7 @@ def page_test_keys():
             except Exception as e:
                 st.error(f"❌ Failed: {e}")
     
-    # Test Groq
+# Test Groq
     st.subheader("Groq")
     key = st.secrets.get("GROQ_API_KEY", "")
     if not key:
@@ -577,7 +577,10 @@ def page_test_keys():
             try:
                 req = urllib.request.Request(
                     "https://api.groq.com/openai/v1/models",
-                    headers={"Authorization": f"Bearer {key}"}
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "User-Agent": "writing-assistant-app/1.0"
+                    }
                 )
                 urllib.request.urlopen(req, timeout=10).read()
                 st.success("✅ Groq key works!")
