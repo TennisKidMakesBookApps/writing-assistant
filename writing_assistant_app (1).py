@@ -153,6 +153,63 @@ def read_uploaded_file(uploaded_file) -> str:
 # SESSION STATE
 # =========================================================================
 
+# =========================================================================
+# AI CALLS
+# =========================================================================
+
+def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct:free") -> str:
+    """Send a prompt to OpenRouter and return the response text."""
+    import urllib.request
+    import json
+
+    key = st.secrets.get("OPENROUTER_API_KEY", "")
+    if not key:
+        raise ValueError("OPENROUTER_API_KEY not found in Streamlit Secrets")
+
+    data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "writing-assistant-app/1.0",
+            "HTTP-Referer": "https://streamlit.app",
+            "X-Title": "Writing Assistant",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return result["choices"][0]["message"]["content"]
+
+
+def extract_characters(book_text: str) -> str:
+    """Ask the AI to extract characters from a book."""
+    sample = book_text[:8000]
+
+    prompt = f"""Analyze the following text from a book and extract all characters.
+
+For each character, provide:
+- Name
+- Role (main character / side character / antagonist / minor)
+- Personality traits (2-4 adjectives)
+- How they speak or act (tone)
+- Their relationships with other characters (if any)
+
+Format each character as a clear section with headers.
+
+TEXT:
+{sample}
+
+CHARACTERS:"""
+
+    return call_openrouter(prompt)
+
+
 def init_state() -> None:
     """Initialize Streamlit session state on first run."""
     defaults = {
@@ -346,7 +403,6 @@ def _upload_ui(slot: str) -> None:
 
 def page_analysis() -> None:
     st.title("🔍 Reference analysis")
-
     if not ref_is_loaded("A") and not ref_is_loaded("B"):
         st.info("Upload a reference first (go to **Upload** in the sidebar).")
         return
@@ -356,12 +412,10 @@ def page_analysis() -> None:
             continue
         ref = get_ref(slot)
         st.markdown(f"### Reference {slot}: *{ref['label']}*")
-
         col1, col2, col3 = st.columns(3)
-        col1.metric("Characters", f"{len(ref['text']):,}")
+        col1.metric("Characters (letters)", f"{len(ref['text']):,}")
         col2.metric("Chunks", len(ref["chunks"]))
-        words = len(ref["text"].split())
-        col3.metric("Words (approx)", f"{words:,}")
+        col3.metric("Words (approx)", f"{len(ref['text'].split()):,}")
 
         with st.expander("Chunk sizes"):
             sizes = [len(c.new_content()) for c in ref["chunks"]]
@@ -369,16 +423,25 @@ def page_analysis() -> None:
                 st.write(f"min: {min(sizes):,} · avg: {sum(sizes)//len(sizes):,} · max: {max(sizes):,}")
             st.bar_chart(sizes)
 
-        st.divider()
+        # 🎭 Character extraction
+        st.markdown("#### 🎭 Character extraction")
+        st.caption("AI reads the first ~8,000 characters of your book and extracts characters")
 
-    st.info(
-        "🧠 **Character extraction is coming next.** This page will show:\n\n"
-        "- All characters found in the book\n"
-        "- Their role (main / side / antagonist)\n"
-        "- Personality traits\n"
-        "- How they speak (tone)\n"
-        "- Relationships with other characters"
-    )
+        if st.button(f"Extract characters from Reference {slot}", key=f"extract_{slot}"):
+            with st.spinner("AI is reading your book... (10-30 seconds)"):
+                try:
+                    result = extract_characters(ref["text"])
+                    st.session_state[f"characters_{slot}"] = result
+                except Exception as e:
+                    st.error(f"Extraction failed: {e}")
+
+        # Show results if we have them
+        if f"characters_{slot}" in st.session_state:
+            st.success("✅ Extracted using: **Llama 3.3 70B** (free tier via OpenRouter)")
+            st.markdown("##### Characters found:")
+            st.markdown(st.session_state[f"characters_{slot}"])
+
+        st.divider()
 
 
 def page_writing() -> None:
