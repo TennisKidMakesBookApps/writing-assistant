@@ -507,6 +507,7 @@ def main() -> None:
             "✍️ Writing":    page_writing,
             "✨ Generate":    page_generate,
             "⚖️ Compare":    page_compare,
+            "🔑 Test Keys": page_test_keys,
         }
 
         choice = st.radio(
@@ -528,6 +529,59 @@ def main() -> None:
 
     pages[choice]()
 
-
+def page_test_keys():
+    st.title("🔑 API Key Test")
+    st.caption("Check that all your API keys are working")
+    
+    import urllib.request
+    import json
+    
+    # Test OpenRouter
+    st.subheader("OpenRouter")
+    key = st.secrets.get("OPENROUTER_API_KEY", "")
+    if not key:
+        st.error("❌ Key not found in Secrets")
+    else:
+        if st.button("Test OpenRouter"):
+            try:
+                req = urllib.request.Request(
+                    "https://openrouter.ai/api/v1/models",
+                    headers={"Authorization": f"Bearer {key}"}
+                )
+                urllib.request.urlopen(req, timeout=10).read()
+                st.success("✅ OpenRouter key works!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+    
+    # Test Gemini
+    st.subheader("Gemini")
+    key = st.secrets.get("GEMINI_API_KEY", "")
+    if not key:
+        st.error("❌ Key not found in Secrets")
+    else:
+        if st.button("Test Gemini"):
+            try:
+                url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+                urllib.request.urlopen(url, timeout=10).read()
+                st.success("✅ Gemini key works!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
+    
+    # Test Groq
+    st.subheader("Groq")
+    key = st.secrets.get("GROQ_API_KEY", "")
+    if not key:
+        st.error("❌ Key not found in Secrets")
+    else:
+        if st.button("Test Groq"):
+            try:
+                req = urllib.request.Request(
+                    "https://api.groq.com/openai/v1/models",
+                    headers={"Authorization": f"Bearer {key}"}
+                )
+                urllib.request.urlopen(req, timeout=10).read()
+                st.success("✅ Groq key works!")
+            except Exception as e:
+                st.error(f"❌ Failed: {e}")
 if __name__ == "__main__":
     main()
