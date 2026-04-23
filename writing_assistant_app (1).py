@@ -212,6 +212,30 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         result = json.loads(resp.read().decode("utf-8"))
     return result["candidates"][0]["content"]["parts"][0]["text"]
 
+def rewrite_in_style(user_text: str, reference_text: str) -> str:
+    """Rewrite user_text to match the style of reference_text."""
+    reference_sample = reference_text[:3000]
+
+    prompt = f"""You are helping a writer improve their draft to match the style of a reference book.
+
+Below is a SAMPLE from the reference book. Study its:
+- Sentence length and rhythm
+- Vocabulary and word choice
+- Tone (dark, playful, dramatic, etc.)
+- How it describes action, scenery, and dialogue
+
+REFERENCE BOOK SAMPLE:
+{reference_sample}
+
+Now rewrite the following draft to match this style while keeping the same meaning and events. Don't add new plot points. Just rewrite in the reference book's voice.
+
+DRAFT TO REWRITE:
+{user_text}
+
+REWRITTEN VERSION:"""
+
+    return call_gemini(prompt)
+
 def extract_characters(book_text: str) -> str:
     """Ask the AI to extract characters from a book."""
     sample = book_text[:8000]
@@ -468,17 +492,16 @@ def page_analysis() -> None:
 
 def page_writing() -> None:
     st.title("✍️ Writing mode")
-    st.caption("Write or paste your draft here. It's saved in the session while the app is running.")
+    st.caption("Write or paste your draft here. Saved while the app is running.")
 
     draft = st.text_area(
         "Your draft",
         value=st.session_state.get("user_text", ""),
-        height=500,
+        height=400,
         key="writing_area",
         placeholder="Start typing your scene, chapter, or paragraph...",
     )
 
-    # Persist edits on every rerun
     st.session_state["user_text"] = draft
 
     words = len(draft.split()) if draft else 0
@@ -496,14 +519,70 @@ def page_writing() -> None:
 
     st.divider()
 
-    st.markdown("### Suggestions")
-    st.info(
-        "💡 **Live suggestions are coming soon.** You'll see:\n\n"
-        "- Highlighted weak areas\n"
-        "- Clickable suggestions that rewrite on click\n"
-        "- Tone mismatch warnings (vs. your reference)\n"
-        "- Actionable checklist (add internal thoughts, vary sentences, etc.)"
-    )
+    # ✨ Rewrite in reference style
+    st.markdown("### ✨ Rewrite in reference style")
+
+    if not ref_is_loaded("A") and not ref_is_loaded("B"):
+        st.info("Upload a reference book on the **Upload** page to enable rewriting.")
+        return
+
+    if not draft.strip():
+        st.info("Write or paste something in the draft above first.")
+        return
+
+    options = []
+    if ref_is_loaded("A"):
+        options.append(f"A: {get_ref('A')['label']}")
+    if ref_is_loaded("B"):
+        options.append(f"B: {get_ref('B')['label']}")
+
+    choice = st.radio("Match style of:", options, horizontal=True)
+    slot = "A" if choice.startswith("A") else "B"
+
+    if st.button("✨ Rewrite in this style", type="primary"):
+        with st.spinner("AI is rewriting your draft... (10-30 seconds)"):
+            try:
+                rewritten = rewrite_in_style(draft, get_ref(slot)["text"])
+                st.session_state["rewritten_text"] = rewritten
+                st.session_state["rewritten_from_slot"] = slot
+            except Exception as e:
+                st.error(f"Rewrite failed: {e}")
+
+    if "rewritten_text" in st.session_state:
+        used_slot = st.session_state.get("rewritten_from_slot", "?")
+        st.success(f"✅ Rewritten to match Reference {used_slot} using **Gemini 2.5 Flash**")
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.markdown("##### 📝 Your original")
+            st.text_area(
+                "original",
+                value=draft,
+                height=300,
+                key="show_original",
+                label_visibility="collapsed",
+                disabled=True,
+            )
+        with col_b:
+            st.markdown("##### ✨ Rewritten")
+            st.text_area(
+                "rewritten",
+                value=st.session_state["rewritten_text"],
+                height=300,
+                key="show_rewritten",
+                label_visibility="collapsed",
+            )
+
+        btn1, btn2 = st.columns(2)
+        with btn1:
+            if st.button("📋 Use rewritten as new draft"):
+                st.session_state["user_text"] = st.session_state["rewritten_text"]
+                del st.session_state["rewritten_text"]
+                st.rerun()
+        with btn2:
+            if st.button("🗑 Discard rewrite"):
+                del st.session_state["rewritten_text"]
+                st.rerun()
 
 
 def page_generate() -> None:
