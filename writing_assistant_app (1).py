@@ -421,7 +421,6 @@ def page_analysis() -> None:
                 st.write(f"min: {min(sizes):,} · avg: {sum(sizes)//len(sizes):,} · max: {max(sizes):,}")
             st.bar_chart(sizes)
 
-        # 🎭 Character extraction
         st.markdown("#### 🎭 Character extraction")
         st.caption("AI reads the first ~8,000 characters of your book and extracts characters")
 
@@ -433,14 +432,12 @@ def page_analysis() -> None:
                 except Exception as e:
                     st.error(f"Extraction failed: {e}")
 
-        # Show results if we have them
         if f"characters_{slot}" in st.session_state:
-           st.success("✅ Extracted using: **DeepSeek v3** (free tier via OpenRouter)")
+            st.success("✅ Extracted using: **DeepSeek v3** (free tier via OpenRouter)")
             st.markdown("##### Characters found:")
             st.markdown(st.session_state[f"characters_{slot}"])
 
         st.divider()
-
 
 def page_writing() -> None:
     st.title("✍️ Writing mode")
