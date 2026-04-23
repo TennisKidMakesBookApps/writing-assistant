@@ -178,8 +178,6 @@ def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
             "User-Agent": "writing-assistant-app/1.0",
-            "HTTP-Referer": "https://streamlit.app",
-            "X-Title": "Writing Assistant",
         },
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
