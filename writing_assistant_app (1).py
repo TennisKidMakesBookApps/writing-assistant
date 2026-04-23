@@ -259,6 +259,31 @@ REWRITTEN VERSION:"""
 
     return call_gemini(prompt)
 
+def generate_text(user_prompt: str, reference_text: str, length: str = "medium") -> str:
+    """Generate new text based on a user prompt, in the style of the reference."""
+    reference_sample = reference_text[:3000]
+
+    length_guide = {
+        "short": "about 100-150 words (1-2 paragraphs)",
+        "medium": "about 300-400 words (3-5 paragraphs)",
+        "long": "about 700-900 words (a full scene)",
+    }.get(length, "about 300-400 words")
+
+    prompt = f"""You are helping a writer generate new content in the style of their reference book.
+
+Below is a SAMPLE from the reference book. Study its voice, tone, vocabulary, sentence rhythm, and how it handles action/description/dialogue.
+
+REFERENCE BOOK SAMPLE:
+{reference_sample}
+
+Now write {length_guide} based on the following prompt. Match the reference book's style exactly — same voice, same tone, same rhythm. Don't explain what you're doing, just write the scene.
+
+PROMPT: {user_prompt}
+
+GENERATED SCENE:"""
+
+    return call_gemini(prompt)
+
 
 def compare_and_improve(user_text: str, reference_text: str) -> str:
     """Compare user's draft to reference and give improvement suggestions."""
