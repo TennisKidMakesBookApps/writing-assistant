@@ -157,7 +157,7 @@ def read_uploaded_file(uploaded_file) -> str:
 # AI CALLS
 # =========================================================================
 
-def call_openrouter(prompt: str, model: str = "google/gemini-2.0-flash-exp:free") -> str:
+def call_openrouter(prompt: str, model: str = "deepseek/deepseek-chat-v3-0324:free") -> str:
     """Send a prompt to OpenRouter and return the response text."""
     import urllib.request
     import json
@@ -435,7 +435,7 @@ def page_analysis() -> None:
 
         # Show results if we have them
         if f"characters_{slot}" in st.session_state:
-            st.success("✅ Extracted using: **Gemini 2.0 Flash** (free tier via OpenRouter)")
+           st.success("✅ Extracted using: **DeepSeek v3** (free tier via OpenRouter)")
             st.markdown("##### Characters found:")
             st.markdown(st.session_state[f"characters_{slot}"])
 
