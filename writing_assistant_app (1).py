@@ -157,7 +157,7 @@ def read_uploaded_file(uploaded_file) -> str:
 # AI CALLS
 # =========================================================================
 
-def call_openrouter(prompt: str, model: str = "openrouter/auto") -> str:
+def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct:free") -> str:
     """Send a prompt to OpenRouter and return the response text."""
     import urllib.request
     import json
@@ -433,7 +433,7 @@ def page_analysis() -> None:
                     st.error(f"Extraction failed: {e}")
 
         if f"characters_{slot}" in st.session_state:
-            st.success("✅ Extracted using: **Auto (free model)** via OpenRouter")
+            st.success("✅ Extracted using: **Llama 3.3 70B** (free tier via OpenRouter)")
             st.markdown("##### Characters found:")
             st.markdown(st.session_state[f"characters_{slot}"])
 
