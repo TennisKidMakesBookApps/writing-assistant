@@ -185,7 +185,7 @@ def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct
     return result["choices"][0]["message"]["content"]
 
 
-def call_gemini(prompt: str, model: str = "gemini-1.5-flash") -> str:
+def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
     """Send a prompt to Google Gemini and return the response text."""
     import urllib.request
     import json
@@ -460,7 +460,7 @@ def page_analysis() -> None:
                     st.error(f"Extraction failed: {e}")
 
         if f"characters_{slot}" in st.session_state:
-            st.success("✅ Extracted using: **Gemini 1.5 Flash** (free tier via Google)")
+            st.success("✅ Extracted using: **Gemini 2.5 Flash** (free tier via Google)")
             st.markdown("##### Characters found:")
             st.markdown(st.session_state[f"characters_{slot}"])
 
