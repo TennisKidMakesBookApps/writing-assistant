@@ -234,7 +234,31 @@ DRAFT TO REWRITE:
 
 REWRITTEN VERSION:"""
 
+   def generate_text(user_prompt: str, reference_text: str, length: str = "medium") -> str:
+    """Generate new text based on a user prompt, in the style of the reference."""
+    reference_sample = reference_text[:3000]
+
+    length_guide = {
+        "short": "about 100-150 words (1-2 paragraphs)",
+        "medium": "about 300-400 words (3-5 paragraphs)",
+        "long": "about 700-900 words (a full scene)",
+    }.get(length, "about 300-400 words")
+
+    prompt = f"""You are helping a writer generate new content in the style of their reference book.
+
+Below is a SAMPLE from the reference book. Study its voice, tone, vocabulary, sentence rhythm, and how it handles action/description/dialogue.
+
+REFERENCE BOOK SAMPLE:
+{reference_sample}
+
+Now write {length_guide} based on the following prompt. Match the reference book's style exactly — same voice, same tone, same rhythm. Don't explain what you're doing, just write the scene.
+
+PROMPT: {user_prompt}
+
+GENERATED SCENE:"""
+
     return call_gemini(prompt)
+    
 
 def extract_characters(book_text: str) -> str:
     """Ask the AI to extract characters from a book."""
@@ -587,36 +611,85 @@ def page_writing() -> None:
 
 def page_generate() -> None:
     st.title("✨ Generate text")
+    st.caption("Generate new scenes, dialogue, or descriptions in your reference book's style.")
 
-    if not ref_is_loaded("A"):
-        st.warning("Generation works best with a reference loaded. Upload one first.")
+    if not ref_is_loaded("A") and not ref_is_loaded("B"):
+        st.info("Upload a reference book on the **Upload** page first.")
+        return
 
-    st.markdown("This page will let you:")
-    st.markdown(
-        "- **Expand a paragraph** into a full scene\n"
-        "- **Continue writing** from where you left off\n"
-        "- **Generate dialogue** between characters\n"
-        "- **Generate descriptions** of places or people\n"
-        "- **Choose style**: Reference A, Reference B, or blended"
+    options = []
+    if ref_is_loaded("A"):
+        options.append(f"A: {get_ref('A')['label']}")
+    if ref_is_loaded("B"):
+        options.append(f"B: {get_ref('B')['label']}")
+
+    choice = st.radio("Match style of:", options, horizontal=True)
+    slot = "A" if choice.startswith("A") else "B"
+
+    user_prompt = st.text_area(
+        "What should be generated?",
+        height=120,
+        placeholder="e.g. 'A tense battle scene where Gregor fights a rat warrior in a dark tunnel'",
+        key="gen_prompt",
     )
 
-    st.divider()
-    st.info("🚧 The generation UI is scaffolded but needs an AI backend. "
-            "Next step: decide between free local methods and the Claude API.")
-
-    prompt = st.text_area(
-        "Prompt (what should be generated?)",
-        height=150,
-        placeholder="e.g. 'Expand this paragraph into a full scene with dialogue and weather'",
+    length = st.select_slider(
+        "Length",
+        options=["short", "medium", "long"],
+        value="medium",
     )
-    col1, col2, col3 = st.columns(3)
-    col1.selectbox("Style", ["Reference A", "Reference B", "Blended", "Neutral"])
-    col2.selectbox("Length", ["Short (~100 words)", "Medium (~300)", "Long (~800)"])
-    col3.selectbox("Type", ["Prose", "Dialogue", "Description", "Inner thoughts"])
 
-    if st.button("Generate", disabled=True):
-        pass
-    st.caption("(Button disabled until the generation backend is wired up.)")
+    if st.button("✨ Generate", type="primary"):
+        if not user_prompt.strip():
+            st.warning("Enter a prompt first.")
+        else:
+            with st.spinner("AI is writing your scene... (15-45 seconds)"):
+                try:
+                    result = generate_text(user_prompt, get_ref(slot)["text"], length)
+                    st.session_state["generated_text"] = result
+                    st.session_state["generated_from_slot"] = slot
+                    st.session_state["generated_prompt"] = user_prompt
+                except Exception as e:
+                    st.error(f"Generation failed: {e}")
+
+    if "generated_text" in st.session_state:
+        used_slot = st.session_state.get("generated_from_slot", "?")
+        st.success(f"✅ Generated in Reference {used_slot}'s style using **Gemini 2.5 Flash**")
+
+        st.markdown("##### ✨ Generated scene")
+        edited = st.text_area(
+            "You can edit this directly:",
+            value=st.session_state["generated_text"],
+            height=400,
+            key="generated_editable",
+        )
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("🔄 Regenerate"):
+                with st.spinner("Generating another version..."):
+                    try:
+                        new_result = generate_text(
+                            st.session_state["generated_prompt"],
+                            get_ref(used_slot)["text"],
+                            length,
+                        )
+                        st.session_state["generated_text"] = new_result
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Regeneration failed: {e}")
+        with col2:
+            if st.button("📋 Add to my draft"):
+                current_draft = st.session_state.get("user_text", "")
+                separator = "\n\n" if current_draft.strip() else ""
+                st.session_state["user_text"] = current_draft + separator + edited
+                st.success("Added to your draft! Go to Writing mode to see it.")
+        with col3:
+            if st.button("🗑 Discard"):
+                del st.session_state["generated_text"]
+                if "generated_prompt" in st.session_state:
+                    del st.session_state["generated_prompt"]
+                st.rerun()
 
 
 def page_compare() -> None:
