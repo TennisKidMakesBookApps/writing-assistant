@@ -237,28 +237,31 @@ REWRITTEN VERSION:"""
     return call_gemini(prompt)
 
 
-def generate_text(user_prompt: str, reference_text: str, length: str = "medium") -> str:
-    """Generate new text based on a user prompt, in the style of the reference."""
+def compare_and_improve(user_text: str, reference_text: str) -> str:
+    """Compare user's draft to reference and give improvement suggestions."""
     reference_sample = reference_text[:3000]
 
-    length_guide = {
-        "short": "about 100-150 words (1-2 paragraphs)",
-        "medium": "about 300-400 words (3-5 paragraphs)",
-        "long": "about 700-900 words (a full scene)",
-    }.get(length, "about 300-400 words")
+    prompt = f"""You are a writing coach. Compare the WRITER'S DRAFT below to the REFERENCE BOOK's style.
 
-    prompt = f"""You are helping a writer generate new content in the style of their reference book.
+Analyze specifically:
+1. Sentence length and rhythm (short/punchy vs long/flowing)
+2. Vocabulary (simple/casual vs rich/literary)
+3. Description density (sparse vs vivid)
+4. Dialogue style (if present)
+5. Tone and mood
+6. Pacing
 
-Below is a SAMPLE from the reference book. Study its voice, tone, vocabulary, sentence rhythm, and how it handles action/description/dialogue.
+Then give 3-5 specific, actionable improvements the writer could make to their draft to feel more like the reference. Include short BEFORE/AFTER rewrite examples where useful.
+
+Format your response in clear sections with headers.
 
 REFERENCE BOOK SAMPLE:
 {reference_sample}
 
-Now write {length_guide} based on the following prompt. Match the reference book's style exactly — same voice, same tone, same rhythm. Don't explain what you're doing, just write the scene.
+WRITER'S DRAFT:
+{user_text}
 
-PROMPT: {user_prompt}
-
-GENERATED SCENE:"""
+COMPARISON AND IMPROVEMENTS:"""
 
     return call_gemini(prompt)
     
@@ -697,28 +700,46 @@ def page_generate() -> None:
 
 def page_compare() -> None:
     st.title("⚖️ Compare & improve")
+    st.caption("AI compares your draft to a reference and suggests improvements.")
 
-    if not ref_is_loaded("A"):
-        st.warning("Upload Reference A first to enable comparison.")
+    if not ref_is_loaded("A") and not ref_is_loaded("B"):
+        st.warning("Upload a reference book on the **Upload** page first.")
         return
 
-    if not st.session_state.get("user_text", "").strip():
+    draft = st.session_state.get("user_text", "")
+    if not draft.strip():
         st.warning("Write something in **Writing Mode** first, then come back.")
         return
 
-    st.markdown(
-        "This page will compare your draft to your reference(s) and suggest improvements:"
-    )
-    st.markdown(
-        "- Sentence length and rhythm vs. reference\n"
-        "- Vocabulary differences\n"
-        "- Description density\n"
-        "- Dialogue style match\n"
-        "- Rewrite examples: Original / Improved / Author A / Author B / Blended"
-    )
+    options = []
+    if ref_is_loaded("A"):
+        options.append(f"A: {get_ref('A')['label']}")
+    if ref_is_loaded("B"):
+        options.append(f"B: {get_ref('B')['label']}")
 
-    st.divider()
-    st.info("🚧 Comparison engine coming next. The data is ready — just needs the analysis logic.")
+    choice = st.radio("Compare to:", options, horizontal=True)
+    slot = "A" if choice.startswith("A") else "B"
+
+    st.markdown(f"**Your draft:** {len(draft.split())} words")
+
+    if st.button("⚖️ Compare and suggest improvements", type="primary"):
+        with st.spinner("AI is analyzing your draft... (15-30 seconds)"):
+            try:
+                result = compare_and_improve(draft, get_ref(slot)["text"])
+                st.session_state["comparison_result"] = result
+                st.session_state["comparison_from_slot"] = slot
+            except Exception as e:
+                st.error(f"Comparison failed: {e}")
+
+    if "comparison_result" in st.session_state:
+        used_slot = st.session_state.get("comparison_from_slot", "?")
+        st.success(f"✅ Compared to Reference {used_slot} using **Gemini 2.5 Flash**")
+        st.markdown("---")
+        st.markdown(st.session_state["comparison_result"])
+
+        if st.button("🗑 Clear comparison"):
+            del st.session_state["comparison_result"]
+            st.rerun()
 
 
 # =========================================================================
