@@ -234,7 +234,10 @@ DRAFT TO REWRITE:
 
 REWRITTEN VERSION:"""
 
-   def generate_text(user_prompt: str, reference_text: str, length: str = "medium") -> str:
+    return call_gemini(prompt)
+
+
+def generate_text(user_prompt: str, reference_text: str, length: str = "medium") -> str:
     """Generate new text based on a user prompt, in the style of the reference."""
     reference_sample = reference_text[:3000]
 
