@@ -185,8 +185,8 @@ def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct
     return result["choices"][0]["message"]["content"]
 
 
-def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
-    """Send a prompt to Google Gemini and return the response text."""
+def _call_gemini_once(prompt: str, model: str) -> str:
+    """Single Gemini API call (no fallback). Used internally."""
     import urllib.request
     import json
 
@@ -211,6 +211,29 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
     with urllib.request.urlopen(req, timeout=60) as resp:
         result = json.loads(resp.read().decode("utf-8"))
     return result["candidates"][0]["content"]["parts"][0]["text"]
+
+
+def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
+    """Send a prompt to Gemini with automatic fallback to Flash-Lite on overload."""
+    import urllib.error
+
+    # Try primary model first
+    try:
+        result = _call_gemini_once(prompt, model)
+        st.session_state["last_model_used"] = model
+        return result
+    except urllib.error.HTTPError as e:
+        # If overloaded (503) or rate-limited (429), fall back to Flash-Lite
+        if e.code in (503, 429) and model != "gemini-2.5-flash-lite":
+            try:
+                result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
+                st.session_state["last_model_used"] = "gemini-2.5-flash-lite (fallback)"
+                return result
+            except Exception:
+                # Fallback also failed — raise the original error
+                raise e
+        # Some other error — re-raise
+        raise
 
 def rewrite_in_style(user_text: str, reference_text: str) -> str:
     """Rewrite user_text to match the style of reference_text."""
