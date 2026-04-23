@@ -185,6 +185,33 @@ def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct
     return result["choices"][0]["message"]["content"]
 
 
+def call_gemini(prompt: str, model: str = "gemini-2.0-flash") -> str:
+    """Send a prompt to Google Gemini and return the response text."""
+    import urllib.request
+    import json
+
+    key = st.secrets.get("GEMINI_API_KEY", "")
+    if not key:
+        raise ValueError("GEMINI_API_KEY not found in Streamlit Secrets")
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
+    data = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "writing-assistant-app/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    return result["candidates"][0]["content"]["parts"][0]["text"]
+
 def extract_characters(book_text: str) -> str:
     """Ask the AI to extract characters from a book."""
     sample = book_text[:8000]
@@ -205,7 +232,7 @@ TEXT:
 
 CHARACTERS:"""
 
-    return call_openrouter(prompt)
+    return call_gemini(prompt)
 
 
 def init_state() -> None:
@@ -433,7 +460,7 @@ def page_analysis() -> None:
                     st.error(f"Extraction failed: {e}")
 
         if f"characters_{slot}" in st.session_state:
-            st.success("✅ Extracted using: **Llama 3.3 70B** (free tier via OpenRouter)")
+            st.success("✅ Extracted using: **Gemini 2.0 Flash** (free tier via Google)")
             st.markdown("##### Characters found:")
             st.markdown(st.session_state[f"characters_{slot}"])
 
