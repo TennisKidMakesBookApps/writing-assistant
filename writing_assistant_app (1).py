@@ -263,6 +263,9 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
     import urllib.error
     import time
 
+    # Track errors for debugging
+    errors = []
+
     # ===== TRY 1: Primary model (Gemini Flash) =====
     try:
         result = _call_gemini_once(prompt, model)
@@ -272,6 +275,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         if e.code not in (503, 429):
             # Some other error (auth, bad request, etc.) — re-raise immediately
             raise
+        errors.append(f"Gemini {model}: HTTP {e.code}")
 
     # ===== TRY 2: Groq first (best rate limits, super fast) =====
     has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
@@ -280,8 +284,17 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
             st.info("⚡ Switching to Groq Llama (faster backup)...")
             result = call_groq(prompt)
             return result
-        except Exception:
-            pass  # Try next fallback
+        except urllib.error.HTTPError as e:
+            # Read the actual error response body for debugging
+            try:
+                error_body = e.read().decode("utf-8")[:200]
+            except Exception:
+                error_body = "(could not read body)"
+            errors.append(f"Groq: HTTP {e.code} - {error_body}")
+        except Exception as e:
+            errors.append(f"Groq: {type(e).__name__} - {str(e)[:200]}")
+    else:
+        errors.append("Groq: GROQ_API_KEY not found in Streamlit Secrets")
 
     # ===== TRY 3: Gemini Flash-Lite =====
     if model != "gemini-2.5-flash-lite":
@@ -292,6 +305,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         except urllib.error.HTTPError as e:
             if e.code not in (503, 429):
                 raise
+            errors.append(f"Gemini Flash-Lite: HTTP {e.code}")
 
     # ===== TRY 4: Quick 5-sec wait, then Groq one more time =====
     if has_groq:
@@ -300,20 +314,22 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         try:
             result = call_groq(prompt)
             return result
-        except Exception:
-            pass
+        except Exception as e:
+            errors.append(f"Groq retry: {type(e).__name__} - {str(e)[:200]}")
 
-    # ===== Give up with helpful message =====
-    error_msg = "🚫 All AI services are rate-limited right now. "
+    # ===== Give up with helpful message + DEBUG INFO =====
+    error_details = "\n".join(f"  • {err}" for err in errors)
+    error_msg = (
+        "🚫 All AI services failed. Debug info:\n"
+        f"{error_details}\n\n"
+        "Suggestions: "
+    )
     if not has_groq:
         error_msg += (
-            "Add a GROQ_API_KEY in Streamlit Secrets for a free backup AI — "
-            "it has much better rate limits than Gemini! "
+            "Add a GROQ_API_KEY in Streamlit Secrets for a free backup AI. "
         )
     error_msg += (
-        "Try: (1) Wait 30 seconds and try again, "
-        "(2) Use 'Quick' depth instead of 'Whole book', "
-        "or (3) Switch to Claude in Settings (if you have a Claude API key)."
+        "Or wait 30 sec and try 'Quick' depth, or switch to Claude in Settings."
     )
     raise RuntimeError(error_msg)
 
