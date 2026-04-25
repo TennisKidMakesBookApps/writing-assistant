@@ -287,7 +287,7 @@ DRAFT TO REWRITE:
 
 REWRITTEN VERSION:"""
 
-    return call_gemini(prompt)
+    return call_ai_for_task("rewrite_in_style", prompt)
 
 def generate_text(user_prompt: str, reference_text: str, length: str = "medium") -> str:
     """Generate new text based on a user prompt, in the style of the reference."""
@@ -312,7 +312,7 @@ PROMPT: {user_prompt}
 
 GENERATED SCENE:"""
 
-    return call_gemini(prompt)
+    return call_ai_for_task("generate_text", prompt)
 
 
 def compare_and_improve(user_text: str, reference_text: str) -> str:
@@ -341,7 +341,7 @@ WRITER'S DRAFT:
 
 COMPARISON AND IMPROVEMENTS:"""
 
-    return call_gemini(prompt)
+    return call_ai_for_task("compare_and_improve", prompt)
     
 
 def extract_characters(book_text: str) -> str:
@@ -364,7 +364,7 @@ TEXT:
 
 CHARACTERS:"""
 
-    return call_gemini(prompt)
+    return call_ai_for_task("extract_characters", prompt)
 
 
 def init_state() -> None:
@@ -378,6 +378,11 @@ def init_state() -> None:
         "ref_b_label": None,
         "ref_b_chunks": [],
         "user_text": "",
+        "ai_extract_characters": "gemini-2.5-flash",
+        "ai_rewrite_in_style": "gemini-2.5-flash",
+        "ai_generate_text": "gemini-2.5-flash",
+        "ai_compare_and_improve": "gemini-2.5-flash",
+        "usage_count": {},
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -410,6 +415,25 @@ def clear_ref(slot: str) -> None:
 def ref_is_loaded(slot: str) -> bool:
     ref = get_ref(slot)
     return bool(ref["text"] and ref["text"].strip())
+
+def call_ai_for_task(task_name: str, prompt: str) -> str:
+    """Call the right AI for a given task based on user settings."""
+    # Track usage
+    usage = st.session_state.get("usage_count", {})
+    usage[task_name] = usage.get(task_name, 0) + 1
+    st.session_state["usage_count"] = usage
+
+    # Read user's choice for this task
+    model_id = st.session_state.get(f"ai_{task_name}", "gemini-2.5-flash")
+
+    # Dispatch to the right function
+    if model_id == "claude-sonnet-4-6":
+        return call_claude(prompt)
+    elif model_id == "gemini-2.5-flash-lite":
+        return call_gemini(prompt, model="gemini-2.5-flash-lite")
+    else:
+        # Default: gemini-2.5-flash with auto-fallback to flash-lite
+        return call_gemini(prompt, model="gemini-2.5-flash")
 
 
 # =========================================================================
