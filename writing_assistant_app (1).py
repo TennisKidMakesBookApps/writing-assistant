@@ -507,9 +507,10 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
     # Groq has higher rate limits than Gemini and is much faster
     has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
 
-    # Chunk size: smaller for Groq (avoids 413 payload errors), bigger for Gemini
-    # Groq's 8B model has stricter request size limits
-    chunk_size = 8000 if has_groq else 15000
+    # Chunk size: must stay under Groq's 8K tokens/min per-request limit
+    # Each char ≈ 0.25 tokens, plus prompt overhead ~500 tokens
+    # 4000 chars ≈ 1000 tokens of text + prompt + output buffer = safe
+    chunk_size = 4000 if has_groq else 15000
     chunks = [text_to_process[i:i + chunk_size] for i in range(0, len(text_to_process), chunk_size)]
 
     if has_groq:
@@ -540,18 +541,51 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
     progress_bar.progress(1.0, text="Merging character info...")
 
     # Merge all chunk results into one final character list
+    # If combined size is too big for one merge call, do it in batches
     combined = "\n\n---CHUNK BREAK---\n\n".join(chunk_results)
-    merge_prompt = f"""Below are character notes extracted from {len(chunks)} different sections of the same book. The same character may appear multiple times.
+
+    # Estimate: if combined > 12,000 chars, do batched merging to avoid 413
+    if len(combined) > 12000 and len(chunk_results) > 3:
+        # Merge in batches of 3 chunks at a time
+        batch_size = 3
+        batches = [
+            "\n\n---CHUNK BREAK---\n\n".join(chunk_results[i:i + batch_size])
+            for i in range(0, len(chunk_results), batch_size)
+        ]
+
+        progress_bar.progress(1.0, text=f"Merging in {len(batches)} batches...")
+
+        batch_summaries = []
+        for batch_text in batches:
+            batch_prompt = f"""Below are character notes from one section of a book. Combine duplicates and clean up the format.
+
+For each character: name, role, traits, tone, relationships.
+
+NOTES:
+{batch_text}
+
+CLEANED CHARACTER LIST:"""
+            try:
+                if has_groq:
+                    batch_summaries.append(call_groq_with_fallback(batch_prompt))
+                else:
+                    batch_summaries.append(call_ai_for_task("extract_characters", batch_prompt))
+            except Exception as e:
+                batch_summaries.append(f"[Batch merge error: {e}]")
+
+        combined = "\n\n---BATCH BREAK---\n\n".join(batch_summaries)
+
+    merge_prompt = f"""Below are character notes extracted from different sections of the same book. The same character may appear multiple times.
 
 Merge them into a single clean character list. For each character:
 - Combine traits and details across all mentions
 - Remove duplicates
 - Keep the role (main/side/antagonist/minor) consistent
-- Skip any "Error in chunk" notes
+- Skip any "Error" notes
 
 Format each character with clear headers: name, role, traits, tone, relationships.
 
-CHUNK NOTES:
+CHARACTER NOTES:
 {combined}
 
 FINAL MERGED CHARACTER LIST:"""
