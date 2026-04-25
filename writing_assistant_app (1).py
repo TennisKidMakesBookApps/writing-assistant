@@ -229,34 +229,41 @@ def call_groq(prompt: str, model: str = "llama-3.1-8b-instant") -> str:
 def call_groq_with_fallback(prompt: str) -> str:
     """Call Groq with automatic fallback between models.
 
-    Tries 8B first (highest daily quota), then 20B, then 70B, then 120B.
-    Each model has its own daily budget, so if one is exhausted others may work.
-    On 413 (payload too large), tries models with bigger context windows.
+    Important: Groq's per-minute token budget (8K TPM) is SHARED across all models
+    in your account. Switching models only helps with per-DAY limits, not per-minute.
+
+    On 429: wait 15 seconds before trying next model (lets quota refill)
+    On 413/400: try next model immediately (different size limits)
     """
     import urllib.error
+    import time
 
     models_to_try = [
-        "llama-3.1-8b-instant",        # Highest daily quota, 128K context
+        "llama-3.1-8b-instant",        # Smallest, cheapest tokens, try first
         "openai/gpt-oss-20b",          # Different model family
-        "llama-3.3-70b-versatile",     # 100K/day, very smart
-        "openai/gpt-oss-120b",         # Large fallback model
+        "llama-3.3-70b-versatile",     # Smarter
+        "openai/gpt-oss-120b",         # Last resort
     ]
 
     last_error = None
-    for model in models_to_try:
+    for idx, model in enumerate(models_to_try):
         try:
             return call_groq(prompt, model=model)
         except urllib.error.HTTPError as e:
-            if e.code in (429, 413, 400):
-                # 429 = rate limit, 413 = payload too large, 400 = model issue
-                # Try next model
-                last_error = e
+            last_error = e
+            if e.code == 429:
+                # Per-minute rate limit — wait before trying next model
+                # since they share the same budget
+                if idx < len(models_to_try) - 1:
+                    time.sleep(15)
+                continue
+            elif e.code in (413, 400):
+                # Payload too large or model issue — try next immediately
                 continue
             else:
-                # Some other error (auth, etc) — give up
+                # Auth, server error, etc. — give up
                 raise
 
-    # All Groq models exhausted
     if last_error:
         raise last_error
     raise RuntimeError("All Groq models failed")
@@ -504,17 +511,21 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
         return _extract_from_chunk(text_to_process)
 
     # For chunked extraction, use Groq directly if available
-    # Groq has higher rate limits than Gemini and is much faster
     has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
 
-    # Chunk size: must stay under Groq's 8K tokens/min per-request limit
-    # Each char ≈ 0.25 tokens, plus prompt overhead ~500 tokens
-    # 4000 chars ≈ 1000 tokens of text + prompt + output buffer = safe
-    chunk_size = 4000 if has_groq else 15000
+    # Chunk size: must keep each request well under Groq's 8K tokens/min limit
+    # 3000 chars ≈ 750 tokens of text + ~500 prompt + ~500 output = ~1750 tokens/req
+    # 8000 TPM ÷ 1750 = ~4 requests/min max -> 15 sec between requests
+    chunk_size = 3000 if has_groq else 15000
     chunks = [text_to_process[i:i + chunk_size] for i in range(0, len(text_to_process), chunk_size)]
 
     if has_groq:
-        st.info(f"⚡ Using Groq for fast extraction ({len(chunks)} chunks)")
+        estimated_minutes = (len(chunks) * 15) // 60 + 1
+        st.info(
+            f"⚡ Using Groq for extraction ({len(chunks)} chunks). "
+            f"Estimated time: ~{estimated_minutes} min "
+            f"(slow pace prevents rate limit errors)"
+        )
 
     progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
     chunk_results = []
@@ -541,11 +552,11 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
             chunk_results.append(f"[Error in chunk {i+1}: {e}]")
             failed_chunks += 1
 
-        # Smart delay based on which API we're using
-        # Groq: 30/min limit -> 2 sec delay
-        # Gemini: 15/min limit -> 4 sec delay
+        # Pace requests to stay under Groq's 8K tokens/min budget
+        # Groq: 15 sec between calls (4 calls/min max)
+        # Gemini: 4 sec between calls (15 calls/min max)
         if i < len(chunks) - 1:  # Don't sleep after last chunk
-            time.sleep(2 if has_groq else 4)
+            time.sleep(15 if has_groq else 4)
 
     progress_bar.progress(1.0, text="Merging character info...")
 
