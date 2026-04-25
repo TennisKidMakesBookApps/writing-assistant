@@ -254,12 +254,11 @@ def _call_gemini_once(prompt: str, model: str) -> str:
 def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
     """Send a prompt to Gemini with automatic fallback chain.
 
-    Fallback strategy:
-    1. Primary model (Gemini Flash) fails (429/503) -> try Flash-Lite
-    2. Flash-Lite fails -> try Groq Llama (if GROQ_API_KEY available)
-    3. Groq fails or unavailable -> wait 30 sec, retry primary
-    4. Still fails -> wait 60 sec, retry Flash-Lite
-    5. Still fails -> give up with helpful error
+    Fallback strategy (FAST - tries Groq early since it has best rate limits):
+    1. Primary model (Gemini Flash) fails (429/503) -> try Groq immediately
+    2. Groq fails -> try Flash-Lite
+    3. All fail -> wait 5 sec and retry Groq once more
+    4. Still fails -> give up with helpful error
     """
     import urllib.error
     import time
@@ -274,7 +273,17 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
             # Some other error (auth, bad request, etc.) — re-raise immediately
             raise
 
-    # ===== TRY 2: Fall back to Flash-Lite =====
+    # ===== TRY 2: Groq first (best rate limits, super fast) =====
+    has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
+    if has_groq:
+        try:
+            st.info("⚡ Switching to Groq Llama (faster backup)...")
+            result = call_groq(prompt)
+            return result
+        except Exception:
+            pass  # Try next fallback
+
+    # ===== TRY 3: Gemini Flash-Lite =====
     if model != "gemini-2.5-flash-lite":
         try:
             result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
@@ -284,45 +293,29 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
             if e.code not in (503, 429):
                 raise
 
-    # ===== TRY 3: Fall back to Groq (if API key available) =====
-    has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
+    # ===== TRY 4: Quick 5-sec wait, then Groq one more time =====
     if has_groq:
+        st.warning("⏳ Brief 5-second pause before final retry...")
+        time.sleep(5)
         try:
-            st.info("⚡ Gemini rate-limited. Switching to Groq Llama...")
             result = call_groq(prompt)
             return result
-        except Exception as groq_error:
-            st.warning(f"Groq fallback also failed: {groq_error}")
+        except Exception:
+            pass
 
-    # ===== TRY 4: Wait 30 sec, retry primary model =====
-    st.warning("⏳ All instant fallbacks failed. Waiting 30 seconds and retrying...")
-    time.sleep(30)
-    try:
-        result = _call_gemini_once(prompt, model)
-        st.session_state["last_model_used"] = f"{model} (after wait)"
-        return result
-    except urllib.error.HTTPError as e:
-        if e.code not in (503, 429):
-            raise
-
-    # ===== TRY 5: Wait 60 sec, retry Flash-Lite as last resort =====
-    st.warning("⏳ Still rate limited. Waiting 60 more seconds...")
-    time.sleep(60)
-    try:
-        result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
-        st.session_state["last_model_used"] = "gemini-2.5-flash-lite (after long wait)"
-        return result
-    except urllib.error.HTTPError as e:
-        if e.code in (503, 429):
-            error_msg = (
-                "🚫 All AI services are currently rate-limited. "
-                "Try: (1) Wait 1-2 minutes, (2) Use 'Quick' depth instead of 'Whole book', "
-            )
-            if not has_groq:
-                error_msg += "(3) Add a GROQ_API_KEY in Streamlit Secrets for a backup AI, "
-            error_msg += "or switch to Claude in Settings (if you have a Claude API key)."
-            raise RuntimeError(error_msg)
-        raise
+    # ===== Give up with helpful message =====
+    error_msg = "🚫 All AI services are rate-limited right now. "
+    if not has_groq:
+        error_msg += (
+            "Add a GROQ_API_KEY in Streamlit Secrets for a free backup AI — "
+            "it has much better rate limits than Gemini! "
+        )
+    error_msg += (
+        "Try: (1) Wait 30 seconds and try again, "
+        "(2) Use 'Quick' depth instead of 'Whole book', "
+        "or (3) Switch to Claude in Settings (if you have a Claude API key)."
+    )
+    raise RuntimeError(error_msg)
 
 def call_claude(prompt: str, model: str = "claude-sonnet-4-6") -> str:
     """Send a prompt to Claude. Premium - only use when explicitly requested."""
@@ -475,10 +468,10 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
         except Exception as e:
             chunk_results.append(f"[Error in chunk {i+1}: {e}]")
 
-        # Small delay between chunks to stay under free-tier rate limit (15/min)
-        # 4 second delay = max 15 requests per minute
+        # Tiny delay between chunks - Groq fallback handles rate limits if hit
+        # 1 sec is enough cushion without slowing things down too much
         if i < len(chunks) - 1:  # Don't sleep after the last chunk
-            time.sleep(4)
+            time.sleep(1)
 
     progress_bar.progress(1.0, text="Merging character info...")
 
