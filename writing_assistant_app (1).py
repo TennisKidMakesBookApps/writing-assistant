@@ -235,6 +235,36 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         # Some other error — re-raise
         raise
 
+def call_claude(prompt: str, model: str = "claude-sonnet-4-6") -> str:
+    """Send a prompt to Claude. Premium - only use when explicitly requested."""
+    import urllib.request
+    import json
+
+    key = st.secrets.get("CLAUDE_API_KEY", "")
+    if not key:
+        raise ValueError("CLAUDE_API_KEY not found in Streamlit Secrets. Add it or pick a different AI in Settings.")
+
+    data = json.dumps({
+        "model": model,
+        "max_tokens": 2048,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=data,
+        headers={
+            "x-api-key": key,
+            "anthropic-version": "2023-06-01",
+            "Content-Type": "application/json",
+            "User-Agent": "writing-assistant-app/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    st.session_state["last_model_used"] = "Claude Sonnet 4.6"
+    return result["content"][0]["text"]
+
 def rewrite_in_style(user_text: str, reference_text: str) -> str:
     """Rewrite user_text to match the style of reference_text."""
     reference_sample = reference_text[:3000]
