@@ -379,8 +379,8 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
             text=f"Reading chunk {i + 1} of {len(chunks)}..."
         )
         try:
-            chunk_text = _extract_from_chunk(chunk, is_partial=True)
-            chunk_results.append(chunk_text)
+            chunk_text_result = _extract_from_chunk(chunk, is_partial=True)
+            chunk_results.append(chunk_text_result)
         except Exception as e:
             chunk_results.append(f"[Error in chunk {i+1}: {e}]")
 
@@ -388,7 +388,7 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
 
     # Merge all chunk results into one final character list
     combined = "\n\n---CHUNK BREAK---\n\n".join(chunk_results)
-  merge_prompt = f"""Below are character notes extracted from {len(chunks)} different sections of the same book. The same character may appear multiple times.
+    merge_prompt = f"""Below are character notes extracted from {len(chunks)} different sections of the same book. The same character may appear multiple times.
 
 Merge them into a single clean character list. For each character:
 - Combine traits and details across all mentions
@@ -668,12 +668,29 @@ def page_analysis() -> None:
             st.bar_chart(sizes)
 
         st.markdown("#### 🎭 Character extraction")
-        st.caption("AI reads the first ~8,000 characters of your book and extracts characters")
+        st.caption("AI reads your book and extracts characters")
+
+        # Depth selection radio group
+        st.write("**Extraction depth:**")
+
+        extraction_depth = st.radio(
+            "How thoroughly should we analyze the book?",
+            options=["quick", "standard", "deep", "whole"],
+            format_func=lambda x: {
+                "quick": "⚡ Quick (~10 sec)",
+                "standard": "🔍 Standard (~30 sec)",
+                "deep": "📚 Deep (~1-2 min)",
+                "whole": "🏛️ Whole book (~3-5 min)"
+            }[x],
+            horizontal=True,
+            label_visibility="collapsed",
+            key=f"depth_{slot}",
+        )
 
         if st.button(f"Extract characters from Reference {slot}", key=f"extract_{slot}"):
-            with st.spinner("AI is reading your book... (10-30 seconds)"):
+            with st.spinner(f"AI is reading your book... ({extraction_depth} depth)"):
                 try:
-                    result = extract_characters(ref["text"])
+                    result = extract_characters(ref["text"], depth=extraction_depth)
                     st.session_state[f"characters_{slot}"] = result
                 except Exception as e:
                     st.error(f"Extraction failed: {e}")
