@@ -214,25 +214,63 @@ def _call_gemini_once(prompt: str, model: str) -> str:
 
 
 def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
-    """Send a prompt to Gemini with automatic fallback to Flash-Lite on overload."""
-    import urllib.error
+    """Send a prompt to Gemini with automatic fallback to Flash-Lite on overload.
 
-    # Try primary model first
+    Strategy on errors:
+    1. Primary model fails (429/503) -> try Flash-Lite immediately
+    2. Flash-Lite also fails -> wait 30 sec and retry primary model
+    3. Still fails -> wait 60 sec and try Flash-Lite one more time
+    4. Still fails -> give up with a helpful error
+    """
+    import urllib.error
+    import time
+
+    # Try 1: Primary model
     try:
         result = _call_gemini_once(prompt, model)
         st.session_state["last_model_used"] = model
         return result
     except urllib.error.HTTPError as e:
-        # If overloaded (503) or rate-limited (429), fall back to Flash-Lite
-        if e.code in (503, 429) and model != "gemini-2.5-flash-lite":
-            try:
-                result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
-                st.session_state["last_model_used"] = "gemini-2.5-flash-lite (fallback)"
-                return result
-            except Exception:
-                # Fallback also failed — raise the original error
-                raise e
-        # Some other error — re-raise
+        if e.code not in (503, 429):
+            # Some other error (auth, bad request, etc.) — re-raise immediately
+            raise
+
+    # Try 2: Fall back to Flash-Lite
+    if model != "gemini-2.5-flash-lite":
+        try:
+            result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
+            st.session_state["last_model_used"] = "gemini-2.5-flash-lite (fallback)"
+            return result
+        except urllib.error.HTTPError as e:
+            if e.code not in (503, 429):
+                raise
+
+    # Try 3: Wait 30 sec, retry primary model
+    st.warning("⏳ Hit rate limit. Waiting 30 seconds and retrying...")
+    time.sleep(30)
+    try:
+        result = _call_gemini_once(prompt, model)
+        st.session_state["last_model_used"] = f"{model} (after wait)"
+        return result
+    except urllib.error.HTTPError as e:
+        if e.code not in (503, 429):
+            raise
+
+    # Try 4: Wait 60 sec, retry Flash-Lite as last resort
+    st.warning("⏳ Still rate limited. Waiting 60 more seconds...")
+    time.sleep(60)
+    try:
+        result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
+        st.session_state["last_model_used"] = "gemini-2.5-flash-lite (after long wait)"
+        return result
+    except urllib.error.HTTPError as e:
+        if e.code in (503, 429):
+            raise RuntimeError(
+                "🚫 Both Gemini Flash and Flash-Lite are rate-limited. "
+                "Free tier allows ~15 requests/minute. "
+                "Try: (1) Wait 1-2 minutes, (2) Use 'Quick' depth instead of 'Whole book', "
+                "or (3) Switch to Claude in Settings (if you have an API key)."
+            )
         raise
 
 def call_claude(prompt: str, model: str = "claude-sonnet-4-6") -> str:
@@ -373,6 +411,8 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
     progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
     chunk_results = []
 
+    import time
+
     for i, chunk in enumerate(chunks):
         progress_bar.progress(
             (i + 1) / len(chunks),
@@ -383,6 +423,11 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
             chunk_results.append(chunk_text_result)
         except Exception as e:
             chunk_results.append(f"[Error in chunk {i+1}: {e}]")
+
+        # Small delay between chunks to stay under free-tier rate limit (15/min)
+        # 4 second delay = max 15 requests per minute
+        if i < len(chunks) - 1:  # Don't sleep after the last chunk
+            time.sleep(4)
 
     progress_bar.progress(1.0, text="Merging character info...")
 
