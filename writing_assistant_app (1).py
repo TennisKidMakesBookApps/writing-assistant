@@ -344,11 +344,75 @@ COMPARISON AND IMPROVEMENTS:"""
     return call_ai_for_task("compare_and_improve", prompt)
     
 
-def extract_characters(book_text: str) -> str:
-    """Ask the AI to extract characters from a book."""
-    sample = book_text[:8000]
+def extract_characters(book_text: str, depth: str = "quick") -> str:
+    """Ask the AI to extract characters from a book.
 
-    prompt = f"""Analyze the following text from a book and extract all characters.
+    depth options:
+        - "quick"     : first 8,000 chars (~10 sec)
+        - "standard"  : first 50,000 chars (~30 sec)
+        - "deep"      : first 150,000 chars (~1 min)
+        - "whole"     : entire book (~3-5 min)
+    """
+    depth_limits = {
+        "quick": 8000,
+        "standard": 50000,
+        "deep": 150000,
+        "whole": len(book_text),
+    }
+    char_limit = depth_limits.get(depth, 8000)
+    text_to_process = book_text[:char_limit]
+
+    # If short enough, do a single call
+    if len(text_to_process) <= 10000:
+        return _extract_from_chunk(text_to_process)
+
+    # Otherwise, split into chunks of ~8000 chars each
+    chunk_size = 8000
+    chunks = [text_to_process[i:i + chunk_size] for i in range(0, len(text_to_process), chunk_size)]
+
+    progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
+    chunk_results = []
+
+    for i, chunk in enumerate(chunks):
+        progress_bar.progress(
+            (i + 1) / len(chunks),
+            text=f"Reading chunk {i + 1} of {len(chunks)}..."
+        )
+        try:
+            chunk_text = _extract_from_chunk(chunk, is_partial=True)
+            chunk_results.append(chunk_text)
+        except Exception as e:
+            chunk_results.append(f"[Error in chunk {i+1}: {e}]")
+
+    progress_bar.progress(1.0, text="Merging character info...")
+
+    # Merge all chunk results into one final character list
+    combined = "\n\n---CHUNK BREAK---\n\n".join(chunk_results)
+  merge_prompt = f"""Below are character notes extracted from {len(chunks)} different sections of the same book. The same character may appear multiple times.
+
+Merge them into a single clean character list. For each character:
+- Combine traits and details across all mentions
+- Remove duplicates
+- Keep the role (main/side/antagonist/minor) consistent
+- Skip any "Error in chunk" notes
+
+Format each character with clear headers: name, role, traits, tone, relationships.
+
+CHUNK NOTES:
+{combined}
+
+FINAL MERGED CHARACTER LIST:"""
+
+    final = call_ai_for_task("extract_characters", merge_prompt)
+    progress_bar.empty()
+    return final
+
+
+def _extract_from_chunk(text: str, is_partial: bool = False) -> str:
+    """Extract characters from a single chunk of text."""
+    context = "this is one section of a longer book — extract any characters that appear" if is_partial else "this is a book"
+
+    prompt = f"""Analyze the following text — {context}. Extract all characters mentioned.
 
 For each character, provide:
 - Name
@@ -360,10 +424,9 @@ For each character, provide:
 Format each character as a clear section with headers.
 
 TEXT:
-{sample}
+{text}
 
 CHARACTERS:"""
-
     return call_ai_for_task("extract_characters", prompt)
 
 
