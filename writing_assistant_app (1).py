@@ -843,6 +843,107 @@ def page_compare() -> None:
             del st.session_state["comparison_result"]
             st.rerun()
 
+def page_settings() -> None:
+    st.title("⚙️ Settings")
+    st.caption("Pick which AI runs each task. Free options are default.")
+
+    # Check what's available
+    has_claude = bool(st.secrets.get("CLAUDE_API_KEY", ""))
+
+    if has_claude:
+        st.success("✅ Claude API key detected — premium options available")
+    else:
+        st.info("ℹ️ Add a CLAUDE_API_KEY in Streamlit Secrets to unlock Claude options")
+
+    st.divider()
+
+    # Build the model options list
+    free_options = {
+        "gemini-2.5-flash": "Gemini 2.5 Flash (free, with auto-fallback)",
+        "gemini-2.5-flash-lite": "Gemini 2.5 Flash-Lite (free, faster, less reliable)",
+    }
+    paid_options = {
+        "claude-sonnet-4-6": "Claude Sonnet 4.6 (premium, ~$0.01-0.03 per call)",
+    }
+
+    all_options = dict(free_options)
+    if has_claude:
+        all_options.update(paid_options)
+
+    option_keys = list(all_options.keys())
+    option_labels = list(all_options.values())
+
+    # Helper to render one task picker
+    def render_task_picker(task_key: str, task_label: str, task_description: str):
+        st.markdown(f"### {task_label}")
+        st.caption(task_description)
+
+        current = st.session_state.get(f"ai_{task_key}", "gemini-2.5-flash")
+        try:
+            current_index = option_keys.index(current)
+        except ValueError:
+            current_index = 0
+
+        chosen_label = st.selectbox(
+            f"AI for {task_label}",
+            option_labels,
+            index=current_index,
+            key=f"select_{task_key}",
+            label_visibility="collapsed",
+        )
+        chosen_key = option_keys[option_labels.index(chosen_label)]
+        st.session_state[f"ai_{task_key}"] = chosen_key
+
+        # Show usage count for this task
+        usage = st.session_state.get("usage_count", {}).get(task_key, 0)
+        st.caption(f"📊 Used {usage} time(s) this session")
+
+    render_task_picker(
+        "extract_characters",
+        "🎭 Character extraction",
+        "Reads your reference book and lists characters with traits.",
+    )
+    st.divider()
+
+    render_task_picker(
+        "rewrite_in_style",
+        "✨ Rewrite in style",
+        "Rewrites your draft to match your reference book's voice.",
+    )
+    st.divider()
+
+    render_task_picker(
+        "generate_text",
+        "📝 Generate text",
+        "Creates new scenes from a prompt, in your reference's style.",
+    )
+    st.divider()
+
+    render_task_picker(
+        "compare_and_improve",
+        "⚖️ Compare & improve",
+        "Analyzes your draft vs reference and suggests improvements.",
+    )
+    st.divider()
+
+    # Reset button
+    if st.button("🔄 Reset all to free defaults"):
+        for task in ("extract_characters", "rewrite_in_style", "generate_text", "compare_and_improve"):
+            st.session_state[f"ai_{task}"] = "gemini-2.5-flash"
+        st.success("All tasks reset to Gemini 2.5 Flash!")
+        st.rerun()
+
+    # Total usage summary
+    st.markdown("### 📊 Session usage summary")
+    usage = st.session_state.get("usage_count", {})
+    if usage:
+        total = sum(usage.values())
+        st.metric("Total AI calls this session", total)
+        for task, count in sorted(usage.items(), key=lambda x: -x[1]):
+            st.write(f"• **{task.replace('_', ' ').title()}**: {count}")
+    else:
+        st.caption("No AI calls yet this session.")
+
 
 # =========================================================================
 # MAIN
@@ -870,6 +971,7 @@ def main() -> None:
             "✍️ Writing":    page_writing,
             "✨ Generate":    page_generate,
             "⚖️ Compare":    page_compare,
+            "⚙️ Settings": page_settings,
         }
 
         choice = st.radio(
