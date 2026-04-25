@@ -430,10 +430,10 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
     """Ask the AI to extract characters from a book.
 
     depth options:
-        - "quick"     : first 8,000 chars (~10 sec)
-        - "standard"  : first 50,000 chars (~30 sec)
-        - "deep"      : first 150,000 chars (~1 min)
-        - "whole"     : entire book (~3-5 min)
+        - "quick"     : first 8,000 chars (~10 sec)   - uses Gemini
+        - "standard"  : first 50,000 chars (~30 sec)  - uses Groq (faster!)
+        - "deep"      : first 150,000 chars (~1 min)  - uses Groq (faster!)
+        - "whole"     : entire book (~3-5 min)         - uses Groq (faster!)
     """
     depth_limits = {
         "quick": 8000,
@@ -444,13 +444,20 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
     char_limit = depth_limits.get(depth, 8000)
     text_to_process = book_text[:char_limit]
 
-    # If short enough, do a single call
+    # If short enough, do a single call (uses normal AI routing)
     if len(text_to_process) <= 10000:
         return _extract_from_chunk(text_to_process)
 
-    # Otherwise, split into chunks of ~8000 chars each
-    chunk_size = 8000
+    # For chunked extraction, use Groq directly if available
+    # Groq has 30 req/min vs Gemini's 15 req/min, and is much faster
+    has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
+
+    # Use bigger chunks (15,000 chars) to reduce total API calls
+    chunk_size = 15000
     chunks = [text_to_process[i:i + chunk_size] for i in range(0, len(text_to_process), chunk_size)]
+
+    if has_groq:
+        st.info(f"⚡ Using Groq Llama for fast extraction ({len(chunks)} chunks)")
 
     progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
     chunk_results = []
@@ -463,15 +470,16 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
             text=f"Reading chunk {i + 1} of {len(chunks)}..."
         )
         try:
-            chunk_text_result = _extract_from_chunk(chunk, is_partial=True)
+            chunk_text_result = _extract_from_chunk(chunk, is_partial=True, prefer_groq=has_groq)
             chunk_results.append(chunk_text_result)
         except Exception as e:
             chunk_results.append(f"[Error in chunk {i+1}: {e}]")
 
-        # Tiny delay between chunks - Groq fallback handles rate limits if hit
-        # 1 sec is enough cushion without slowing things down too much
-        if i < len(chunks) - 1:  # Don't sleep after the last chunk
-            time.sleep(1)
+        # Smart delay based on which API we're using
+        # Groq: 30/min limit -> 2 sec delay
+        # Gemini: 15/min limit -> 4 sec delay
+        if i < len(chunks) - 1:  # Don't sleep after last chunk
+            time.sleep(2 if has_groq else 4)
 
     progress_bar.progress(1.0, text="Merging character info...")
 
@@ -492,13 +500,26 @@ CHUNK NOTES:
 
 FINAL MERGED CHARACTER LIST:"""
 
-    final = call_ai_for_task("extract_characters", merge_prompt)
+    # Use Groq for the merge too if available (faster + bypasses Gemini limits)
+    if has_groq:
+        try:
+            final = call_groq(merge_prompt)
+        except Exception:
+            # Groq failed for merge — fall back to normal routing
+            final = call_ai_for_task("extract_characters", merge_prompt)
+    else:
+        final = call_ai_for_task("extract_characters", merge_prompt)
+
     progress_bar.empty()
     return final
 
 
-def _extract_from_chunk(text: str, is_partial: bool = False) -> str:
-    """Extract characters from a single chunk of text."""
+def _extract_from_chunk(text: str, is_partial: bool = False, prefer_groq: bool = False) -> str:
+    """Extract characters from a single chunk of text.
+
+    If prefer_groq=True and a Groq API key is set, calls Groq directly
+    (skipping the normal Gemini-first routing) for better rate limits.
+    """
     context = "this is one section of a longer book — extract any characters that appear" if is_partial else "this is a book"
 
     prompt = f"""Analyze the following text — {context}. Extract all characters mentioned.
@@ -516,6 +537,15 @@ TEXT:
 {text}
 
 CHARACTERS:"""
+
+    # If preferring Groq and it's available, call directly
+    if prefer_groq and st.secrets.get("GROQ_API_KEY", ""):
+        try:
+            return call_groq(prompt)
+        except Exception:
+            # Groq failed — fall through to normal routing as backup
+            pass
+
     return call_ai_for_task("extract_characters", prompt)
 
 
