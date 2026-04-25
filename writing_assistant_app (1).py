@@ -518,6 +518,8 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
 
     progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
     chunk_results = []
+    successful_chunks = 0
+    failed_chunks = 0
 
     import time
 
@@ -528,9 +530,16 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
         )
         try:
             chunk_text_result = _extract_from_chunk(chunk, is_partial=True, prefer_groq=has_groq)
-            chunk_results.append(chunk_text_result)
+            # Sanity check: did we actually get content back?
+            if chunk_text_result and len(chunk_text_result.strip()) > 20:
+                chunk_results.append(chunk_text_result)
+                successful_chunks += 1
+            else:
+                chunk_results.append(f"[Chunk {i+1}: empty result]")
+                failed_chunks += 1
         except Exception as e:
             chunk_results.append(f"[Error in chunk {i+1}: {e}]")
+            failed_chunks += 1
 
         # Smart delay based on which API we're using
         # Groq: 30/min limit -> 2 sec delay
@@ -539,6 +548,20 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
             time.sleep(2 if has_groq else 4)
 
     progress_bar.progress(1.0, text="Merging character info...")
+
+    # CRITICAL: If we got NO successful chunks, abort with a clear error
+    # instead of asking the AI to "merge" empty/error data (it will hallucinate)
+    if successful_chunks == 0:
+        progress_bar.empty()
+        raise RuntimeError(
+            f"❌ All {len(chunks)} chunks failed. The AI returned no character data. "
+            f"This usually means rate limits were hit on every attempt. "
+            f"Try: (1) Wait a few minutes, (2) Use 'Quick' depth, or (3) Try again tomorrow."
+        )
+
+    # Warn if many chunks failed (but some succeeded)
+    if failed_chunks > 0:
+        st.warning(f"⚠️ {failed_chunks} of {len(chunks)} chunks failed — results may be incomplete.")
 
     # Merge all chunk results into one final character list
     # If combined size is too big for one merge call, do it in batches
