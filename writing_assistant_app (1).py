@@ -190,13 +190,14 @@ def call_groq(prompt: str, model: str = "llama-3.1-8b-instant") -> str:
 
     Used as a third-tier fallback when both Gemini Flash and Flash-Lite fail.
 
-    Free tier daily limits (tokens per day):
-        - "llama-3.1-8b-instant"    : 500,000 tokens/day  (default - best for chunking!)
-        - "llama-3.3-70b-versatile" : 100,000 tokens/day  (smarter but limited)
-        - "gemma2-9b-it"            : 500,000 tokens/day  (alternative backup)
+    Available production models (as of 2026):
+        - "llama-3.1-8b-instant"     : Fast, large daily quota (default)
+        - "llama-3.3-70b-versatile"  : Smarter, smaller daily quota
+        - "openai/gpt-oss-20b"       : OpenAI's open model, alternative
+        - "openai/gpt-oss-120b"      : Larger OpenAI open model
 
     The 8B model is plenty smart for character extraction tasks
-    and has 5x the daily budget of the 70B model.
+    and has the highest daily budget.
     """
     import urllib.request
     import json
@@ -228,15 +229,17 @@ def call_groq(prompt: str, model: str = "llama-3.1-8b-instant") -> str:
 def call_groq_with_fallback(prompt: str) -> str:
     """Call Groq with automatic fallback between models.
 
-    Tries 8B first (highest daily quota), then 70B, then gemma2 as last resort.
+    Tries 8B first (highest daily quota), then 20B, then 70B, then 120B.
     Each model has its own daily budget, so if one is exhausted others may work.
+    On 413 (payload too large), tries models with bigger context windows.
     """
     import urllib.error
 
     models_to_try = [
-        "llama-3.1-8b-instant",      # 500K/day - try first
-        "gemma2-9b-it",              # 500K/day - good backup
-        "llama-3.3-70b-versatile",   # 100K/day - last resort (smartest)
+        "llama-3.1-8b-instant",        # Highest daily quota, 128K context
+        "openai/gpt-oss-20b",          # Different model family
+        "llama-3.3-70b-versatile",     # 100K/day, very smart
+        "openai/gpt-oss-120b",         # Large fallback model
     ]
 
     last_error = None
@@ -244,8 +247,9 @@ def call_groq_with_fallback(prompt: str) -> str:
         try:
             return call_groq(prompt, model=model)
         except urllib.error.HTTPError as e:
-            if e.code == 429:
-                # This specific model is rate-limited, try next
+            if e.code in (429, 413, 400):
+                # 429 = rate limit, 413 = payload too large, 400 = model issue
+                # Try next model
                 last_error = e
                 continue
             else:
@@ -500,15 +504,16 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
         return _extract_from_chunk(text_to_process)
 
     # For chunked extraction, use Groq directly if available
-    # Groq has 30 req/min vs Gemini's 15 req/min, and is much faster
+    # Groq has higher rate limits than Gemini and is much faster
     has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
 
-    # Use bigger chunks (15,000 chars) to reduce total API calls
-    chunk_size = 15000
+    # Chunk size: smaller for Groq (avoids 413 payload errors), bigger for Gemini
+    # Groq's 8B model has stricter request size limits
+    chunk_size = 8000 if has_groq else 15000
     chunks = [text_to_process[i:i + chunk_size] for i in range(0, len(text_to_process), chunk_size)]
 
     if has_groq:
-        st.info(f"⚡ Using Groq Llama for fast extraction ({len(chunks)} chunks)")
+        st.info(f"⚡ Using Groq for fast extraction ({len(chunks)} chunks)")
 
     progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
     chunk_results = []
