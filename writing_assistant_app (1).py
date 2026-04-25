@@ -185,16 +185,18 @@ def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct
     return result["choices"][0]["message"]["content"]
 
 
-def call_groq(prompt: str, model: str = "llama-3.3-70b-versatile") -> str:
+def call_groq(prompt: str, model: str = "llama-3.1-8b-instant") -> str:
     """Send a prompt to Groq (free tier, very generous rate limits).
 
     Used as a third-tier fallback when both Gemini Flash and Flash-Lite fail.
-    Free tier: 30 requests/min, 14,400 requests/day.
 
-    Available models:
-        - "llama-3.3-70b-versatile" (default, smartest)
-        - "llama-3.1-8b-instant"    (faster, slightly less smart)
-        - "mixtral-8x7b-32768"      (good for long context)
+    Free tier daily limits (tokens per day):
+        - "llama-3.1-8b-instant"    : 500,000 tokens/day  (default - best for chunking!)
+        - "llama-3.3-70b-versatile" : 100,000 tokens/day  (smarter but limited)
+        - "gemma2-9b-it"            : 500,000 tokens/day  (alternative backup)
+
+    The 8B model is plenty smart for character extraction tasks
+    and has 5x the daily budget of the 70B model.
     """
     import urllib.request
     import json
@@ -221,6 +223,39 @@ def call_groq(prompt: str, model: str = "llama-3.3-70b-versatile") -> str:
         result = json.loads(resp.read().decode("utf-8"))
     st.session_state["last_model_used"] = f"Groq {model} (fallback)"
     return result["choices"][0]["message"]["content"]
+
+
+def call_groq_with_fallback(prompt: str) -> str:
+    """Call Groq with automatic fallback between models.
+
+    Tries 8B first (highest daily quota), then 70B, then gemma2 as last resort.
+    Each model has its own daily budget, so if one is exhausted others may work.
+    """
+    import urllib.error
+
+    models_to_try = [
+        "llama-3.1-8b-instant",      # 500K/day - try first
+        "gemma2-9b-it",              # 500K/day - good backup
+        "llama-3.3-70b-versatile",   # 100K/day - last resort (smartest)
+    ]
+
+    last_error = None
+    for model in models_to_try:
+        try:
+            return call_groq(prompt, model=model)
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                # This specific model is rate-limited, try next
+                last_error = e
+                continue
+            else:
+                # Some other error (auth, etc) — give up
+                raise
+
+    # All Groq models exhausted
+    if last_error:
+        raise last_error
+    raise RuntimeError("All Groq models failed")
 
 
 def _call_gemini_once(prompt: str, model: str) -> str:
@@ -281,8 +316,8 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
     has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
     if has_groq:
         try:
-            st.info("⚡ Switching to Groq Llama (faster backup)...")
-            result = call_groq(prompt)
+            st.info("⚡ Switching to Groq (trying multiple models)...")
+            result = call_groq_with_fallback(prompt)
             return result
         except urllib.error.HTTPError as e:
             # Read the actual error response body for debugging
@@ -312,7 +347,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         st.warning("⏳ Brief 5-second pause before final retry...")
         time.sleep(5)
         try:
-            result = call_groq(prompt)
+            result = call_groq_with_fallback(prompt)
             return result
         except Exception as e:
             errors.append(f"Groq retry: {type(e).__name__} - {str(e)[:200]}")
@@ -519,7 +554,7 @@ FINAL MERGED CHARACTER LIST:"""
     # Use Groq for the merge too if available (faster + bypasses Gemini limits)
     if has_groq:
         try:
-            final = call_groq(merge_prompt)
+            final = call_groq_with_fallback(merge_prompt)
         except Exception:
             # Groq failed for merge — fall back to normal routing
             final = call_ai_for_task("extract_characters", merge_prompt)
@@ -554,10 +589,10 @@ TEXT:
 
 CHARACTERS:"""
 
-    # If preferring Groq and it's available, call directly
+    # If preferring Groq and it's available, call directly with multi-model fallback
     if prefer_groq and st.secrets.get("GROQ_API_KEY", ""):
         try:
-            return call_groq(prompt)
+            return call_groq_with_fallback(prompt)
         except Exception:
             # Groq failed — fall through to normal routing as backup
             pass
