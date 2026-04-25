@@ -185,6 +185,44 @@ def call_openrouter(prompt: str, model: str = "meta-llama/llama-3.3-70b-instruct
     return result["choices"][0]["message"]["content"]
 
 
+def call_groq(prompt: str, model: str = "llama-3.3-70b-versatile") -> str:
+    """Send a prompt to Groq (free tier, very generous rate limits).
+
+    Used as a third-tier fallback when both Gemini Flash and Flash-Lite fail.
+    Free tier: 30 requests/min, 14,400 requests/day.
+
+    Available models:
+        - "llama-3.3-70b-versatile" (default, smartest)
+        - "llama-3.1-8b-instant"    (faster, slightly less smart)
+        - "mixtral-8x7b-32768"      (good for long context)
+    """
+    import urllib.request
+    import json
+
+    key = st.secrets.get("GROQ_API_KEY", "")
+    if not key:
+        raise ValueError("GROQ_API_KEY not found in Streamlit Secrets")
+
+    data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.groq.com/openai/v1/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "User-Agent": "writing-assistant-app/1.0",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    st.session_state["last_model_used"] = f"Groq {model} (fallback)"
+    return result["choices"][0]["message"]["content"]
+
+
 def _call_gemini_once(prompt: str, model: str) -> str:
     """Single Gemini API call (no fallback). Used internally."""
     import urllib.request
@@ -214,18 +252,19 @@ def _call_gemini_once(prompt: str, model: str) -> str:
 
 
 def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
-    """Send a prompt to Gemini with automatic fallback to Flash-Lite on overload.
+    """Send a prompt to Gemini with automatic fallback chain.
 
-    Strategy on errors:
-    1. Primary model fails (429/503) -> try Flash-Lite immediately
-    2. Flash-Lite also fails -> wait 30 sec and retry primary model
-    3. Still fails -> wait 60 sec and try Flash-Lite one more time
-    4. Still fails -> give up with a helpful error
+    Fallback strategy:
+    1. Primary model (Gemini Flash) fails (429/503) -> try Flash-Lite
+    2. Flash-Lite fails -> try Groq Llama (if GROQ_API_KEY available)
+    3. Groq fails or unavailable -> wait 30 sec, retry primary
+    4. Still fails -> wait 60 sec, retry Flash-Lite
+    5. Still fails -> give up with helpful error
     """
     import urllib.error
     import time
 
-    # Try 1: Primary model
+    # ===== TRY 1: Primary model (Gemini Flash) =====
     try:
         result = _call_gemini_once(prompt, model)
         st.session_state["last_model_used"] = model
@@ -235,7 +274,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
             # Some other error (auth, bad request, etc.) — re-raise immediately
             raise
 
-    # Try 2: Fall back to Flash-Lite
+    # ===== TRY 2: Fall back to Flash-Lite =====
     if model != "gemini-2.5-flash-lite":
         try:
             result = _call_gemini_once(prompt, "gemini-2.5-flash-lite")
@@ -245,8 +284,18 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
             if e.code not in (503, 429):
                 raise
 
-    # Try 3: Wait 30 sec, retry primary model
-    st.warning("⏳ Hit rate limit. Waiting 30 seconds and retrying...")
+    # ===== TRY 3: Fall back to Groq (if API key available) =====
+    has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
+    if has_groq:
+        try:
+            st.info("⚡ Gemini rate-limited. Switching to Groq Llama...")
+            result = call_groq(prompt)
+            return result
+        except Exception as groq_error:
+            st.warning(f"Groq fallback also failed: {groq_error}")
+
+    # ===== TRY 4: Wait 30 sec, retry primary model =====
+    st.warning("⏳ All instant fallbacks failed. Waiting 30 seconds and retrying...")
     time.sleep(30)
     try:
         result = _call_gemini_once(prompt, model)
@@ -256,7 +305,7 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         if e.code not in (503, 429):
             raise
 
-    # Try 4: Wait 60 sec, retry Flash-Lite as last resort
+    # ===== TRY 5: Wait 60 sec, retry Flash-Lite as last resort =====
     st.warning("⏳ Still rate limited. Waiting 60 more seconds...")
     time.sleep(60)
     try:
@@ -265,12 +314,14 @@ def call_gemini(prompt: str, model: str = "gemini-2.5-flash") -> str:
         return result
     except urllib.error.HTTPError as e:
         if e.code in (503, 429):
-            raise RuntimeError(
-                "🚫 Both Gemini Flash and Flash-Lite are rate-limited. "
-                "Free tier allows ~15 requests/minute. "
+            error_msg = (
+                "🚫 All AI services are currently rate-limited. "
                 "Try: (1) Wait 1-2 minutes, (2) Use 'Quick' depth instead of 'Whole book', "
-                "or (3) Switch to Claude in Settings (if you have an API key)."
             )
+            if not has_groq:
+                error_msg += "(3) Add a GROQ_API_KEY in Streamlit Secrets for a backup AI, "
+            error_msg += "or switch to Claude in Settings (if you have a Claude API key)."
+            raise RuntimeError(error_msg)
         raise
 
 def call_claude(prompt: str, model: str = "claude-sonnet-4-6") -> str:
@@ -974,11 +1025,17 @@ def page_settings() -> None:
 
     # Check what's available
     has_claude = bool(st.secrets.get("CLAUDE_API_KEY", ""))
+    has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
 
     if has_claude:
         st.success("✅ Claude API key detected — premium options available")
     else:
         st.info("ℹ️ Add a CLAUDE_API_KEY in Streamlit Secrets to unlock Claude options")
+
+    if has_groq:
+        st.success("✅ Groq API key detected — used as backup when Gemini hits rate limits")
+    else:
+        st.info("ℹ️ Add a GROQ_API_KEY in Streamlit Secrets for a free backup AI (recommended!)")
 
     st.divider()
 
