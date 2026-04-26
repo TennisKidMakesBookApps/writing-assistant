@@ -1173,16 +1173,36 @@ def page_settings() -> None:
     # Check what's available
     has_claude = bool(st.secrets.get("CLAUDE_API_KEY", ""))
     has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
+    has_nvidia = bool(st.secrets.get("NVIDIA_API_KEY", ""))
+    has_cerebras = bool(st.secrets.get("CEREBRAS_API_KEY", ""))
+    has_github = bool(st.secrets.get("GITHUB_TOKEN", ""))
+    has_cloudflare = bool(st.secrets.get("CLOUDFLARE_API_TOKEN", "") and st.secrets.get("CLOUDFLARE_ACCOUNT_ID", ""))
+
+    # Count free fallback APIs (Gemini is always there)
+    free_fallback_count = 1  # Gemini
+    if has_groq: free_fallback_count += 1
+    if has_nvidia: free_fallback_count += 1
+    if has_cerebras: free_fallback_count += 1
+    if has_github: free_fallback_count += 1
+    if has_cloudflare: free_fallback_count += 1
+
+    st.success(f"✅ {free_fallback_count} free APIs configured for round-robin load balancing")
+
+    with st.expander("📋 Detected API keys"):
+        st.write("**Free APIs:**")
+        st.write("• ✅ Gemini (always required)")
+        st.write(f"• {'✅' if has_groq else '❌'} Groq")
+        st.write(f"• {'✅' if has_nvidia else '❌'} NVIDIA NIM")
+        st.write(f"• {'✅' if has_cerebras else '❌'} Cerebras")
+        st.write(f"• {'✅' if has_github else '❌'} GitHub Models")
+        st.write(f"• {'✅' if has_cloudflare else '❌'} Cloudflare Workers AI")
+        st.write("\n**Premium APIs:**")
+        st.write(f"• {'✅' if has_claude else '❌'} Claude (premium opt-in)")
 
     if has_claude:
-        st.success("✅ Claude API key detected — premium options available")
+        st.info("💎 Claude available as premium opt-in for any task")
     else:
-        st.info("ℹ️ Add a CLAUDE_API_KEY in Streamlit Secrets to unlock Claude options")
-
-    if has_groq:
-        st.success("✅ Groq API key detected — used as backup when Gemini hits rate limits")
-    else:
-        st.info("ℹ️ Add a GROQ_API_KEY in Streamlit Secrets for a free backup AI (recommended!)")
+        st.caption("ℹ️ Add CLAUDE_API_KEY in Streamlit Secrets to unlock Claude (premium)")
 
     st.divider()
 
@@ -1272,6 +1292,236 @@ def page_settings() -> None:
             st.write(f"• **{task.replace('_', ' ').title()}**: {count}")
     else:
         st.caption("No AI calls yet this session.")
+
+    st.divider()
+
+    # ===== API CONNECTION TESTER =====
+    st.markdown("### 🔧 API Connection Tester")
+    st.caption("Click to test each API and see which ones are working. "
+               "This sends a tiny test message to each one.")
+
+    if st.button("🧪 Test all APIs", type="primary"):
+        _run_api_tests()
+
+
+def _run_api_tests() -> None:
+    """Test each configured API by sending a small request and timing it."""
+    import time
+    import urllib.request
+    import urllib.error
+    import json
+
+    test_prompt = "Say hi in exactly 3 words."
+
+    # Build list of APIs to test based on what keys are configured
+    apis_to_test = []
+
+    # Gemini
+    if st.secrets.get("GEMINI_API_KEY", ""):
+        apis_to_test.append(("Gemini Flash", "gemini"))
+    else:
+        st.warning("⚠️ GEMINI_API_KEY not set in Secrets — skipping Gemini test")
+
+    # Groq
+    if st.secrets.get("GROQ_API_KEY", ""):
+        apis_to_test.append(("Groq Llama 3.1 8B", "groq"))
+    else:
+        st.warning("⚠️ GROQ_API_KEY not set — skipping Groq test")
+
+    # Claude
+    if st.secrets.get("CLAUDE_API_KEY", ""):
+        apis_to_test.append(("Claude Sonnet 4.6", "claude"))
+
+    # NVIDIA
+    if st.secrets.get("NVIDIA_API_KEY", ""):
+        apis_to_test.append(("NVIDIA Llama 3.3 70B", "nvidia"))
+    else:
+        st.warning("⚠️ NVIDIA_API_KEY not set — skipping NVIDIA test")
+
+    # Cerebras
+    if st.secrets.get("CEREBRAS_API_KEY", ""):
+        apis_to_test.append(("Cerebras Llama 3.1 8B", "cerebras"))
+    else:
+        st.warning("⚠️ CEREBRAS_API_KEY not set — skipping Cerebras test")
+
+    # GitHub Models
+    if st.secrets.get("GITHUB_TOKEN", ""):
+        apis_to_test.append(("GitHub Models (GPT-4o-mini)", "github"))
+    else:
+        st.warning("⚠️ GITHUB_TOKEN not set — skipping GitHub Models test")
+
+    # Cloudflare
+    if st.secrets.get("CLOUDFLARE_API_TOKEN", "") and st.secrets.get("CLOUDFLARE_ACCOUNT_ID", ""):
+        apis_to_test.append(("Cloudflare Workers AI", "cloudflare"))
+    else:
+        if not st.secrets.get("CLOUDFLARE_API_TOKEN", ""):
+            st.warning("⚠️ CLOUDFLARE_API_TOKEN not set — skipping Cloudflare test")
+        if not st.secrets.get("CLOUDFLARE_ACCOUNT_ID", ""):
+            st.warning("⚠️ CLOUDFLARE_ACCOUNT_ID not set — skipping Cloudflare test")
+
+    if not apis_to_test:
+        st.error("❌ No API keys found in Streamlit Secrets! Add at least one API key first.")
+        return
+
+    st.markdown("---")
+    st.markdown(f"#### Testing {len(apis_to_test)} APIs...")
+
+    progress_bar = st.progress(0, text="Starting tests...")
+    results = []
+
+    for i, (name, api_id) in enumerate(apis_to_test):
+        progress_bar.progress(
+            (i + 1) / len(apis_to_test),
+            text=f"Testing {name}..."
+        )
+        start_time = time.time()
+        try:
+            response = _test_single_api(api_id, test_prompt)
+            elapsed = time.time() - start_time
+            # Truncate response for display
+            preview = response[:60].replace("\n", " ").strip()
+            results.append({
+                "name": name,
+                "status": "✅",
+                "time": f"{elapsed:.1f}s",
+                "detail": f'Response: "{preview}..."' if len(response) > 60 else f'Response: "{preview}"',
+            })
+        except urllib.error.HTTPError as e:
+            elapsed = time.time() - start_time
+            try:
+                error_body = e.read().decode("utf-8")[:150]
+            except Exception:
+                error_body = "(could not read error body)"
+            results.append({
+                "name": name,
+                "status": "❌",
+                "time": f"{elapsed:.1f}s",
+                "detail": f"HTTP {e.code} — {error_body}",
+            })
+        except Exception as e:
+            elapsed = time.time() - start_time
+            results.append({
+                "name": name,
+                "status": "❌",
+                "time": f"{elapsed:.1f}s",
+                "detail": f"{type(e).__name__}: {str(e)[:150]}",
+            })
+
+    progress_bar.empty()
+
+    # Show results
+    working = sum(1 for r in results if r["status"] == "✅")
+    total = len(results)
+
+    if working == total:
+        st.success(f"🎉 All {total} APIs working perfectly!")
+    elif working > 0:
+        st.warning(f"⚠️ {working} of {total} APIs working. See details below.")
+    else:
+        st.error(f"❌ No APIs working. Check your keys and try again.")
+
+    st.markdown("#### Results:")
+    for r in results:
+        if r["status"] == "✅":
+            st.success(f"{r['status']} **{r['name']}** — {r['time']}\n\n_{r['detail']}_")
+        else:
+            st.error(f"{r['status']} **{r['name']}** — {r['time']}\n\n_{r['detail']}_")
+
+
+def _test_single_api(api_id: str, prompt: str) -> str:
+    """Send a tiny test request to a specific API and return the response."""
+    import urllib.request
+    import json
+
+    if api_id == "gemini":
+        return _call_gemini_once(prompt, "gemini-2.5-flash")
+
+    elif api_id == "groq":
+        return call_groq(prompt, model="llama-3.1-8b-instant")
+
+    elif api_id == "claude":
+        return call_claude(prompt)
+
+    elif api_id == "nvidia":
+        key = st.secrets["NVIDIA_API_KEY"]
+        data = json.dumps({
+            "model": "meta/llama-3.3-70b-instruct",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 50,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"]
+
+    elif api_id == "cerebras":
+        key = st.secrets["CEREBRAS_API_KEY"]
+        data = json.dumps({
+            "model": "llama3.1-8b",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 50,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.cerebras.ai/v1/chat/completions",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"]
+
+    elif api_id == "github":
+        key = st.secrets["GITHUB_TOKEN"]
+        data = json.dumps({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 50,
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            "https://models.inference.ai.azure.com/chat/completions",
+            data=data,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        return result["choices"][0]["message"]["content"]
+
+    elif api_id == "cloudflare":
+        token = st.secrets["CLOUDFLARE_API_TOKEN"]
+        account_id = st.secrets["CLOUDFLARE_ACCOUNT_ID"]
+        data = json.dumps({
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": 50,
+        }).encode("utf-8")
+        url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/@cf/meta/llama-3.1-8b-instruct"
+        req = urllib.request.Request(
+            url,
+            data=data,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+        # Cloudflare wraps response differently
+        return result.get("result", {}).get("response", str(result))
+
+    else:
+        raise ValueError(f"Unknown API: {api_id}")
 
 
 # =========================================================================
