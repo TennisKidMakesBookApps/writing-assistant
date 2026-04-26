@@ -920,52 +920,71 @@ COMBINED CHARACTER NOTES:"""
 
         combined = "\n\n---BATCH BREAK---\n\n".join(batch_summaries)
 
-    merge_prompt = f"""Below are character notes extracted from different sections of the same book. The same character may appear multiple times — combine all mentions into one entry per character.
+    # ===== FINAL MERGE STEP =====
+    # Safety check: merge prompt + combined notes must fit in API context
+    # Most APIs handle 8K-12K input. Trim if too big.
+    MAX_MERGE_INPUT = 11000
 
-Organize the FINAL output into these clearly-labeled sections (use ## markdown headers):
+    if len(combined) > MAX_MERGE_INPUT:
+        st.warning(f"⚠️ Combined notes too long ({len(combined)} chars), trimming for merge...")
+        combined = combined[:MAX_MERGE_INPUT] + "\n\n[...notes truncated for length...]"
+
+    merge_prompt = f"""Below are character notes extracted from a book. Combine all mentions of each character and organize into the sections below.
+
+Use ## markdown headers for each section:
 
 ## 🌍 Races & Species
-List every race, species, or notable group mentioned (humans, animals, fantasy races, factions). For each, briefly describe their nature, abilities, culture, or role in the story. Skip if no races are mentioned.
+List every race/species/group mentioned. Skip if none.
 
 ## 🦸 Main Characters
-The protagonist(s) and most important characters who drive the story. For each, include:
-- **Name** (with any nicknames/titles)
-- **Race / Species**
-- **Faction / Group**
-- **Description** (physical appearance, age)
-- **Personality** (3-5 traits)
-- **Abilities & Skills** — BE SPECIFIC. List every special ability, talent, skill, or thing they're good at (e.g. "Gregor has bloodlust in combat and can echolocate like bats")
-- **Storyline / Arc** — their journey, goals, key moments, conflicts
-- **Relationships** — allies, enemies, family, romantic interests
-- **Notable Quotes/Moments**
+The protagonist(s) and most important characters. For each: name, race, faction, description, personality, **abilities & skills (be specific)**, storyline/arc, relationships, notable moments.
 
 ## 🛡️ Side Characters
-Important supporting characters who appear multiple times but aren't the protagonist. Same detailed format as Main Characters.
+Supporting characters. Same format.
 
 ## ⚔️ Antagonists & Villains
-Anyone opposing the protagonist — main villains and lesser antagonists. Same detailed format.
+Characters opposing the protagonist. Same format.
 
 ## ❓ Partial-Context Characters
-Characters we only have limited info on (briefly mentioned, unclear motives, or only seen once). Include both potential allies and potential enemies. Note what we DO know and what's UNCLEAR.
+Characters with limited info. Note what's KNOWN vs UNCLEAR.
 
-Rules:
-- Combine all mentions of each character into ONE entry
-- Don't lose details — if any note mentions an ability, race, or relationship, include it
-- Skip "Error" notes
-- If a section has no characters, write "None mentioned in this book."
-- Use bullet points for readability within each character entry
+If a section has no characters, write "None mentioned in this book."
 
 CHARACTER NOTES:
 {combined}
 
 FINAL ORGANIZED CHARACTER ANALYSIS:"""
 
-    # Use round-robin for the final merge call as well
+    # Try the round-robin merge with multiple fallback layers
+    final = None
+    merge_errors = []
+
+    # Attempt 1: Round-robin across primary providers
     try:
         final = call_with_round_robin(merge_prompt, 0, providers)
-    except Exception:
-        # Last-ditch fallback to normal routing
-        final = call_ai_for_task("extract_characters", merge_prompt)
+    except Exception as e:
+        merge_errors.append(f"Round-robin merge: {type(e).__name__}: {str(e)[:100]}")
+
+    # Attempt 2: Try the simple call_ai_for_task as a backup
+    if not final or not final.strip():
+        try:
+            final = call_ai_for_task("extract_characters", merge_prompt)
+        except Exception as e:
+            merge_errors.append(f"Fallback merge: {type(e).__name__}: {str(e)[:100]}")
+
+    # Attempt 3: If merge STILL failed, return the raw chunk results so user gets SOMETHING
+    if not final or not final.strip():
+        progress_bar.empty()
+        st.error(
+            f"⚠️ Final merge step failed but {successful_chunks} chunks succeeded. "
+            f"Showing raw chunk results below.\n\nMerge errors: {' | '.join(merge_errors)}"
+        )
+        # Return raw chunk results with a header so user gets useful output
+        raw_output = "# 🎭 Character Analysis (raw — merge step failed)\n\n"
+        raw_output += "*The final organize step failed, but here are the per-chunk results:*\n\n"
+        raw_output += "---\n\n"
+        raw_output += "\n\n---\n\n".join(chunk_results)
+        return raw_output
 
     progress_bar.empty()
     return final
@@ -1286,17 +1305,41 @@ def page_analysis() -> None:
         )
 
         if st.button(f"Extract characters from Reference {slot}", key=f"extract_{slot}"):
-            with st.spinner(f"AI is reading your book... ({extraction_depth} depth)"):
-                try:
+            try:
+                with st.spinner(f"AI is reading your book... ({extraction_depth} depth)"):
                     result = extract_characters(ref["text"], depth=extraction_depth)
+
+                # Validate the result before saving — don't save empty/junk
+                if not result or not result.strip():
+                    st.error(
+                        "❌ Extraction returned an empty result. "
+                        "The merge step may have failed silently. "
+                        "Try again, or use a shallower depth (Quick or Standard)."
+                    )
+                elif len(result.strip()) < 50:
+                    st.error(
+                        f"❌ Extraction returned suspiciously short result "
+                        f"({len(result.strip())} chars): {result[:200]}"
+                    )
+                    st.session_state[f"characters_{slot}"] = result  # Save anyway
+                else:
                     st.session_state[f"characters_{slot}"] = result
-                except Exception as e:
-                    st.error(f"Extraction failed: {e}")
+                    st.success(f"✅ Extracted {len(result)} characters of analysis!")
+
+            except Exception as e:
+                # Show full error including the type so we can debug
+                import traceback
+                st.error(f"❌ Extraction failed: {type(e).__name__}: {e}")
+                with st.expander("🐛 Full error details (for debugging)"):
+                    st.code(traceback.format_exc())
 
         if f"characters_{slot}" in st.session_state:
-            st.success("✅ Extracted using: **Gemini 2.5 Flash** (free tier via Google)")
-            st.markdown("##### Characters found:")
+            st.markdown("##### 🎭 Character analysis:")
             st.markdown(st.session_state[f"characters_{slot}"])
+
+            if st.button(f"🗑 Clear analysis for Reference {slot}", key=f"clear_chars_{slot}"):
+                del st.session_state[f"characters_{slot}"]
+                st.rerun()
 
         st.divider()
 
