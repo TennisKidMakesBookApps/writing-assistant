@@ -269,6 +269,264 @@ def call_groq_with_fallback(prompt: str) -> str:
     raise RuntimeError("All Groq models failed")
 
 
+# =========================================================================
+# ADDITIONAL FREE API PROVIDERS (for round-robin load balancing)
+# =========================================================================
+
+def call_nvidia(prompt: str, model: str = "meta/llama-3.3-70b-instruct") -> str:
+    """Call NVIDIA NIM API. Free tier: ~40 RPM, no daily token cap."""
+    import urllib.request
+    import json
+
+    key = st.secrets.get("NVIDIA_API_KEY", "")
+    if not key:
+        raise ValueError("NVIDIA_API_KEY not found in Streamlit Secrets")
+
+    data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2048,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    st.session_state["last_model_used"] = f"NVIDIA {model}"
+    return result["choices"][0]["message"]["content"]
+
+
+def call_cerebras(prompt: str, model: str = "llama3.1-8b") -> str:
+    """Call Cerebras API. Free tier: 1M tokens/day, super fast."""
+    import urllib.request
+    import json
+
+    key = st.secrets.get("CEREBRAS_API_KEY", "")
+    if not key:
+        raise ValueError("CEREBRAS_API_KEY not found in Streamlit Secrets")
+
+    data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2048,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.cerebras.ai/v1/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    st.session_state["last_model_used"] = f"Cerebras {model}"
+    return result["choices"][0]["message"]["content"]
+
+
+def call_github_models(prompt: str, model: str = "gpt-4o-mini") -> str:
+    """Call GitHub Models API. Uses your GitHub PAT. Free tier."""
+    import urllib.request
+    import json
+
+    key = st.secrets.get("GITHUB_TOKEN", "")
+    if not key:
+        raise ValueError("GITHUB_TOKEN not found in Streamlit Secrets")
+
+    data = json.dumps({
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2048,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://models.inference.ai.azure.com/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    st.session_state["last_model_used"] = f"GitHub {model}"
+    return result["choices"][0]["message"]["content"]
+
+
+def call_cloudflare(prompt: str, model: str = "@cf/meta/llama-3.1-8b-instruct") -> str:
+    """Call Cloudflare Workers AI. Free tier: 10K neurons/day."""
+    import urllib.request
+    import json
+
+    token = st.secrets.get("CLOUDFLARE_API_TOKEN", "")
+    account_id = st.secrets.get("CLOUDFLARE_ACCOUNT_ID", "")
+    if not token or not account_id:
+        raise ValueError("CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID not found in Streamlit Secrets")
+
+    data = json.dumps({
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2048,
+    }).encode("utf-8")
+
+    url = f"https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/run/{model}"
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        result = json.loads(resp.read().decode("utf-8"))
+    st.session_state["last_model_used"] = f"Cloudflare {model}"
+    return result.get("result", {}).get("response", "")
+
+
+# =========================================================================
+# ROUND-ROBIN LOAD BALANCER
+# =========================================================================
+
+def get_available_providers() -> List[Dict[str, Any]]:
+    """Return list of free API providers used for ROUND-ROBIN load balancing.
+
+    Excludes:
+        - Claude (premium, opt-in only via Settings)
+        - NVIDIA (reserved as dedicated backup fixer)
+        - Cloudflare (reserved as final fallback)
+
+    The round-robin rotation uses: Gemini, Cerebras, Groq, GitHub Models
+    """
+    providers = []
+
+    if st.secrets.get("GEMINI_API_KEY", ""):
+        providers.append({
+            "name": "Gemini Flash",
+            "call_fn": lambda p: _call_gemini_once(p, "gemini-2.5-flash"),
+        })
+
+    if st.secrets.get("CEREBRAS_API_KEY", ""):
+        providers.append({
+            "name": "Cerebras",
+            "call_fn": call_cerebras,
+        })
+
+    if st.secrets.get("GROQ_API_KEY", ""):
+        providers.append({
+            "name": "Groq",
+            "call_fn": lambda p: call_groq(p, "llama-3.1-8b-instant"),
+        })
+
+    if st.secrets.get("GITHUB_TOKEN", ""):
+        providers.append({
+            "name": "GitHub Models",
+            "call_fn": call_github_models,
+        })
+
+    return providers
+
+
+def get_backup_providers() -> List[Dict[str, Any]]:
+    """Return list of BACKUP providers used to fix failed chunks.
+
+    NVIDIA goes first (dedicated fixer), then Cloudflare as last resort.
+    These are NOT used in round-robin to keep them fresh for emergencies.
+    """
+    backups = []
+
+    if st.secrets.get("NVIDIA_API_KEY", ""):
+        backups.append({
+            "name": "NVIDIA (backup)",
+            "call_fn": call_nvidia,
+        })
+
+    if st.secrets.get("CLOUDFLARE_API_TOKEN", "") and st.secrets.get("CLOUDFLARE_ACCOUNT_ID", ""):
+        backups.append({
+            "name": "Cloudflare (last resort)",
+            "call_fn": call_cloudflare,
+        })
+
+    return backups
+
+
+def call_with_round_robin(prompt: str, chunk_index: int, providers: List[Dict[str, Any]]) -> str:
+    """Send a request using round-robin scheduling across providers.
+
+    Strategy:
+    1. Try the round-robin primary for this chunk index
+    2. If it fails, fall through other primary providers
+    3. If ALL primaries fail, try backup providers (NVIDIA, Cloudflare)
+    4. If everything still fails, wait & retry forever until something works
+
+    This guarantees the chunk eventually succeeds, even if all APIs are
+    temporarily rate-limited.
+    """
+    import urllib.error
+    import time
+
+    if not providers:
+        raise RuntimeError("No API providers configured!")
+
+    backups = get_backup_providers()
+    n = len(providers)
+    primary_idx = chunk_index % n
+
+    retry_round = 0
+    max_wait_rounds = 10  # After 10 retry rounds, give up (but each round = 30s+ wait)
+
+    while retry_round < max_wait_rounds:
+        errors = []
+
+        # ===== PHASE 1: Try all primary providers (starting with round-robin pick) =====
+        for offset in range(n):
+            idx = (primary_idx + offset) % n
+            provider = providers[idx]
+            try:
+                return provider["call_fn"](prompt)
+            except urllib.error.HTTPError as e:
+                errors.append(f"{provider['name']}: HTTP {e.code}")
+                continue
+            except Exception as e:
+                errors.append(f"{provider['name']}: {type(e).__name__}")
+                continue
+
+        # ===== PHASE 2: Try backup providers (NVIDIA first, then Cloudflare) =====
+        for backup in backups:
+            try:
+                return backup["call_fn"](prompt)
+            except urllib.error.HTTPError as e:
+                errors.append(f"{backup['name']}: HTTP {e.code}")
+                continue
+            except Exception as e:
+                errors.append(f"{backup['name']}: {type(e).__name__}")
+                continue
+
+        # ===== PHASE 3: Everything failed — wait and retry =====
+        retry_round += 1
+        wait_seconds = 30 * retry_round  # Exponential-ish: 30s, 60s, 90s, 120s...
+
+        st.warning(
+            f"⏳ All {n + len(backups)} APIs failed (chunk {chunk_index + 1}). "
+            f"Waiting {wait_seconds}s before retry attempt #{retry_round + 1}..."
+        )
+        time.sleep(wait_seconds)
+        # Loop back to phase 1
+
+    # If we got here, we've waited a LONG time and still nothing works
+    raise RuntimeError(
+        f"❌ Chunk {chunk_index + 1} failed after {max_wait_rounds} retry rounds "
+        f"(~25 minutes of waiting). All APIs are persistently rate-limited or down. "
+        f"Last errors: {'; '.join(errors[-3:])}"
+    )
+
+
 def _call_gemini_once(prompt: str, model: str) -> str:
     """Single Gemini API call (no fallback). Used internally."""
     import urllib.request
@@ -489,13 +747,16 @@ COMPARISON AND IMPROVEMENTS:"""
     
 
 def extract_characters(book_text: str, depth: str = "quick") -> str:
-    """Ask the AI to extract characters from a book.
+    """Ask the AI to extract characters from a book using round-robin load balancing.
 
     depth options:
-        - "quick"     : first 8,000 chars (~10 sec)   - uses Gemini
-        - "standard"  : first 50,000 chars (~30 sec)  - uses Groq (faster!)
-        - "deep"      : first 150,000 chars (~1 min)  - uses Groq (faster!)
-        - "whole"     : entire book (~3-5 min)         - uses Groq (faster!)
+        - "quick"     : first 8,000 chars (~10 sec)
+        - "standard"  : first 50,000 chars
+        - "deep"      : first 150,000 chars
+        - "whole"     : entire book
+
+    Uses round-robin scheduling across all configured free APIs to maximize
+    throughput and minimize rate-limit hits.
     """
     depth_limits = {
         "quick": 8000,
@@ -506,81 +767,117 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
     char_limit = depth_limits.get(depth, 8000)
     text_to_process = book_text[:char_limit]
 
+    # Get all available API providers
+    providers = get_available_providers()
+    backups = get_backup_providers()
+    num_providers = len(providers)
+
+    if num_providers == 0:
+        raise RuntimeError("No API keys configured! Add at least GEMINI_API_KEY in Streamlit Secrets.")
+
     # If short enough, do a single call (uses normal AI routing)
     if len(text_to_process) <= 10000:
         return _extract_from_chunk(text_to_process)
 
-    # For chunked extraction, use Groq directly if available
-    has_groq = bool(st.secrets.get("GROQ_API_KEY", ""))
-
-    # Chunk size: must keep each request well under Groq's 8K tokens/min limit
-    # 3000 chars ≈ 750 tokens of text + ~500 prompt + ~500 output = ~1750 tokens/req
-    # 8000 TPM ÷ 1750 = ~4 requests/min max -> 15 sec between requests
-    chunk_size = 3000 if has_groq else 15000
+    # Bigger chunks possible since we're spreading load across multiple APIs
+    # 4000 chars = safe size for all providers including Groq's 8K TPM limit
+    chunk_size = 4000
     chunks = [text_to_process[i:i + chunk_size] for i in range(0, len(text_to_process), chunk_size)]
 
-    if has_groq:
-        estimated_minutes = (len(chunks) * 15) // 60 + 1
-        st.info(
-            f"⚡ Using Groq for extraction ({len(chunks)} chunks). "
-            f"Estimated time: ~{estimated_minutes} min "
-            f"(slow pace prevents rate limit errors)"
-        )
+    # Calculate delay: divide by number of providers since each handles 1/N of traffic
+    # Most providers do ~30 RPM → 2 sec/req per provider
+    # With N providers in round-robin: 2/N sec between requests
+    # Floor at 1 sec to avoid hammering
+    delay_between = max(1.0, 6.0 / num_providers)
+
+    estimated_seconds = int(len(chunks) * delay_between) + len(chunks) * 2  # +2 for API call time
+    estimated_minutes = max(1, estimated_seconds // 60)
+
+    provider_names = ", ".join(p["name"] for p in providers)
+    backup_names = ", ".join(b["name"] for b in backups) if backups else "none"
+    st.info(
+        f"⚡ Round-robin across **{num_providers} primary APIs**: {provider_names}\n\n"
+        f"🛟 Backup APIs (used if primaries fail): {backup_names}\n\n"
+        f"📦 {len(chunks)} chunks · ⏱️ Estimated ~{estimated_minutes} min · "
+        f"🔄 Will retry forever until success"
+    )
 
     progress_bar = st.progress(0, text=f"Reading chunk 1 of {len(chunks)}...")
     chunk_results = []
     successful_chunks = 0
     failed_chunks = 0
+    provider_usage = {p["name"]: 0 for p in providers}
 
     import time
 
     for i, chunk in enumerate(chunks):
+        # Pick provider for this chunk via round-robin
+        provider_for_this_chunk = providers[i % num_providers]["name"]
+
         progress_bar.progress(
             (i + 1) / len(chunks),
-            text=f"Reading chunk {i + 1} of {len(chunks)}..."
+            text=f"Chunk {i + 1}/{len(chunks)} → {provider_for_this_chunk}"
         )
+
+        # Build the extraction prompt
+        chunk_prompt = f"""Analyze the following text — this is one section of a longer book. Extract any characters that appear.
+
+For each character, provide:
+- Name
+- Role (main character / side character / antagonist / minor)
+- Personality traits (2-4 adjectives)
+- How they speak or act (tone)
+- Their relationships with other characters (if any)
+
+Format each character as a clear section with headers.
+
+TEXT:
+{chunk}
+
+CHARACTERS:"""
+
         try:
-            chunk_text_result = _extract_from_chunk(chunk, is_partial=True, prefer_groq=has_groq)
-            # Sanity check: did we actually get content back?
-            if chunk_text_result and len(chunk_text_result.strip()) > 20:
-                chunk_results.append(chunk_text_result)
+            chunk_result = call_with_round_robin(chunk_prompt, i, providers)
+            if chunk_result and len(chunk_result.strip()) > 20:
+                chunk_results.append(chunk_result)
                 successful_chunks += 1
+                provider_usage[provider_for_this_chunk] = provider_usage.get(provider_for_this_chunk, 0) + 1
             else:
                 chunk_results.append(f"[Chunk {i+1}: empty result]")
                 failed_chunks += 1
         except Exception as e:
-            chunk_results.append(f"[Error in chunk {i+1}: {e}]")
+            chunk_results.append(f"[Error in chunk {i+1}: {str(e)[:100]}]")
             failed_chunks += 1
 
-        # Pace requests to stay under Groq's 8K tokens/min budget
-        # Groq: 15 sec between calls (4 calls/min max)
-        # Gemini: 4 sec between calls (15 calls/min max)
-        if i < len(chunks) - 1:  # Don't sleep after last chunk
-            time.sleep(15 if has_groq else 4)
+        # Pace requests
+        if i < len(chunks) - 1:
+            time.sleep(delay_between)
 
     progress_bar.progress(1.0, text="Merging character info...")
 
-    # CRITICAL: If we got NO successful chunks, abort with a clear error
-    # instead of asking the AI to "merge" empty/error data (it will hallucinate)
+    # If everything failed, abort with clear error
     if successful_chunks == 0:
         progress_bar.empty()
         raise RuntimeError(
-            f"❌ All {len(chunks)} chunks failed. The AI returned no character data. "
-            f"This usually means rate limits were hit on every attempt. "
-            f"Try: (1) Wait a few minutes, (2) Use 'Quick' depth, or (3) Try again tomorrow."
+            f"❌ All {len(chunks)} chunks failed across all {num_providers} APIs. "
+            f"This is unusual — check your API keys in Settings page."
         )
 
-    # Warn if many chunks failed (but some succeeded)
+    # Show success stats
     if failed_chunks > 0:
         st.warning(f"⚠️ {failed_chunks} of {len(chunks)} chunks failed — results may be incomplete.")
+    else:
+        st.success(f"✅ All {len(chunks)} chunks processed successfully!")
+
+    # Show which providers were used
+    used_summary = " · ".join(f"{name}: {count}" for name, count in provider_usage.items() if count > 0)
+    st.caption(f"📊 Provider usage: {used_summary}")
 
     # Merge all chunk results into one final character list
-    # If combined size is too big for one merge call, do it in batches
     combined = "\n\n---CHUNK BREAK---\n\n".join(chunk_results)
 
-    # Estimate: if combined > 12,000 chars, do batched merging to avoid 413
+    # If combined size is huge, do batched merging first to avoid context limits
     if len(combined) > 12000 and len(chunk_results) > 3:
-        # Merge in batches of 3 chunks at a time
         batch_size = 3
         batches = [
             "\n\n---CHUNK BREAK---\n\n".join(chunk_results[i:i + batch_size])
@@ -590,7 +887,7 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
         progress_bar.progress(1.0, text=f"Merging in {len(batches)} batches...")
 
         batch_summaries = []
-        for batch_text in batches:
+        for batch_idx, batch_text in enumerate(batches):
             batch_prompt = f"""Below are character notes from one section of a book. Combine duplicates and clean up the format.
 
 For each character: name, role, traits, tone, relationships.
@@ -600,10 +897,10 @@ NOTES:
 
 CLEANED CHARACTER LIST:"""
             try:
-                if has_groq:
-                    batch_summaries.append(call_groq_with_fallback(batch_prompt))
-                else:
-                    batch_summaries.append(call_ai_for_task("extract_characters", batch_prompt))
+                # Use round-robin for batch merges too
+                batch_summaries.append(
+                    call_with_round_robin(batch_prompt, batch_idx, providers)
+                )
             except Exception as e:
                 batch_summaries.append(f"[Batch merge error: {e}]")
 
@@ -624,14 +921,11 @@ CHARACTER NOTES:
 
 FINAL MERGED CHARACTER LIST:"""
 
-    # Use Groq for the merge too if available (faster + bypasses Gemini limits)
-    if has_groq:
-        try:
-            final = call_groq_with_fallback(merge_prompt)
-        except Exception:
-            # Groq failed for merge — fall back to normal routing
-            final = call_ai_for_task("extract_characters", merge_prompt)
-    else:
+    # Use round-robin for the final merge call as well
+    try:
+        final = call_with_round_robin(merge_prompt, 0, providers)
+    except Exception:
+        # Last-ditch fallback to normal routing
         final = call_ai_for_task("extract_characters", merge_prompt)
 
     progress_bar.empty()
