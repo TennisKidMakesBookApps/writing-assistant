@@ -819,17 +819,25 @@ def extract_characters(book_text: str, depth: str = "quick") -> str:
             text=f"Chunk {i + 1}/{len(chunks)} → {provider_for_this_chunk}"
         )
 
-        # Build the extraction prompt
-        chunk_prompt = f"""Analyze the following text — this is one section of a longer book. Extract any characters that appear.
+        # Build the extraction prompt — gather rich detail per character
+        chunk_prompt = f"""Analyze the following text — this is one section of a longer book. Extract EVERY character mentioned, even minor ones.
 
-For each character, provide:
-- Name
-- Role (main character / side character / antagonist / minor)
-- Personality traits (2-4 adjectives)
-- How they speak or act (tone)
-- Their relationships with other characters (if any)
+For each character, provide as much of the following as the text reveals:
+- **Name** (and any nicknames or titles)
+- **Role**: main / side / antagonist / minor / unclear
+- **Race or species** (human, animal, fantasy race, etc. — say "unknown" if not stated)
+- **Faction or group** (which side they're on, family, kingdom, etc.)
+- **Physical description** (appearance, age, distinctive features)
+- **Personality traits** (3-5 adjectives)
+- **How they speak/act** (tone, mannerisms, quirks)
+- **Abilities, skills, or powers** (anything special they can do — combat skills, magic, languages, instincts, etc. Be specific! E.g. "echolocation like bats", "bloodlust in combat", "expert swordsman")
+- **Storyline / arc** (what happens to them in this section — their goals, conflicts, key moments)
+- **Relationships** (allies, enemies, family, romantic interests)
+- **Notable quotes or moments** (if any stand out)
 
-Format each character as a clear section with headers.
+Be thorough. If a character only appears briefly or with limited info, still include them but mark fields as "unclear" or "not shown in this section."
+
+Format each character as a clearly labeled section.
 
 TEXT:
 {chunk}
@@ -888,14 +896,20 @@ CHARACTERS:"""
 
         batch_summaries = []
         for batch_idx, batch_text in enumerate(batches):
-            batch_prompt = f"""Below are character notes from one section of a book. Combine duplicates and clean up the format.
+            batch_prompt = f"""Below are character notes from sections of a book. Combine duplicates and preserve as much detail as possible.
 
-For each character: name, role, traits, tone, relationships.
+For each character, keep ALL details mentioned across notes:
+- Name, role, race/species, faction
+- Physical description, personality traits
+- Abilities/skills/powers (be specific!)
+- Storyline/arc, relationships, notable moments
+
+Don't lose information — combine, don't shorten. If a detail appears in any note, keep it.
 
 NOTES:
 {batch_text}
 
-CLEANED CHARACTER LIST:"""
+COMBINED CHARACTER NOTES:"""
             try:
                 # Use round-robin for batch merges too
                 batch_summaries.append(
@@ -906,20 +920,45 @@ CLEANED CHARACTER LIST:"""
 
         combined = "\n\n---BATCH BREAK---\n\n".join(batch_summaries)
 
-    merge_prompt = f"""Below are character notes extracted from different sections of the same book. The same character may appear multiple times.
+    merge_prompt = f"""Below are character notes extracted from different sections of the same book. The same character may appear multiple times — combine all mentions into one entry per character.
 
-Merge them into a single clean character list. For each character:
-- Combine traits and details across all mentions
-- Remove duplicates
-- Keep the role (main/side/antagonist/minor) consistent
-- Skip any "Error" notes
+Organize the FINAL output into these clearly-labeled sections (use ## markdown headers):
 
-Format each character with clear headers: name, role, traits, tone, relationships.
+## 🌍 Races & Species
+List every race, species, or notable group mentioned (humans, animals, fantasy races, factions). For each, briefly describe their nature, abilities, culture, or role in the story. Skip if no races are mentioned.
+
+## 🦸 Main Characters
+The protagonist(s) and most important characters who drive the story. For each, include:
+- **Name** (with any nicknames/titles)
+- **Race / Species**
+- **Faction / Group**
+- **Description** (physical appearance, age)
+- **Personality** (3-5 traits)
+- **Abilities & Skills** — BE SPECIFIC. List every special ability, talent, skill, or thing they're good at (e.g. "Gregor has bloodlust in combat and can echolocate like bats")
+- **Storyline / Arc** — their journey, goals, key moments, conflicts
+- **Relationships** — allies, enemies, family, romantic interests
+- **Notable Quotes/Moments**
+
+## 🛡️ Side Characters
+Important supporting characters who appear multiple times but aren't the protagonist. Same detailed format as Main Characters.
+
+## ⚔️ Antagonists & Villains
+Anyone opposing the protagonist — main villains and lesser antagonists. Same detailed format.
+
+## ❓ Partial-Context Characters
+Characters we only have limited info on (briefly mentioned, unclear motives, or only seen once). Include both potential allies and potential enemies. Note what we DO know and what's UNCLEAR.
+
+Rules:
+- Combine all mentions of each character into ONE entry
+- Don't lose details — if any note mentions an ability, race, or relationship, include it
+- Skip "Error" notes
+- If a section has no characters, write "None mentioned in this book."
+- Use bullet points for readability within each character entry
 
 CHARACTER NOTES:
 {combined}
 
-FINAL MERGED CHARACTER LIST:"""
+FINAL ORGANIZED CHARACTER ANALYSIS:"""
 
     # Use round-robin for the final merge call as well
     try:
@@ -938,23 +977,45 @@ def _extract_from_chunk(text: str, is_partial: bool = False, prefer_groq: bool =
     If prefer_groq=True and a Groq API key is set, calls Groq directly
     (skipping the normal Gemini-first routing) for better rate limits.
     """
-    context = "this is one section of a longer book — extract any characters that appear" if is_partial else "this is a book"
+    context = "this is one section of a longer book — extract any characters that appear" if is_partial else "this is a complete book or excerpt"
 
-    prompt = f"""Analyze the following text — {context}. Extract all characters mentioned.
+    prompt = f"""Analyze the following text — {context}. Extract EVERY character mentioned, including minor ones.
 
-For each character, provide:
-- Name
-- Role (main character / side character / antagonist / minor)
-- Personality traits (2-4 adjectives)
-- How they speak or act (tone)
-- Their relationships with other characters (if any)
+Organize your response into these clearly-labeled sections (use ## markdown headers):
 
-Format each character as a clear section with headers.
+## 🌍 Races & Species
+List every race, species, or notable group mentioned. Briefly describe each. Skip if none.
+
+## 🦸 Main Characters
+The protagonist(s) and most important characters. For each:
+- **Name** (with nicknames/titles)
+- **Race / Species**
+- **Faction / Group**
+- **Description** (appearance, age)
+- **Personality** (3-5 traits)
+- **Abilities & Skills** — BE SPECIFIC. List every special ability, talent, or thing they're good at (e.g. "echolocation like bats", "bloodlust in combat", "expert swordsman")
+- **Storyline / Arc** — their goals, conflicts, key moments
+- **Relationships** — allies, enemies, family
+- **Notable Quotes/Moments**
+
+## 🛡️ Side Characters
+Important supporting characters (not the protagonist). Same detailed format.
+
+## ⚔️ Antagonists & Villains
+Anyone opposing the protagonist. Same detailed format.
+
+## ❓ Partial-Context Characters
+Characters with limited info (briefly mentioned, unclear motives). Note what's KNOWN vs UNCLEAR.
+
+Rules:
+- Be thorough, not brief
+- Use bullet points within each character entry
+- If a section has no characters, write "None mentioned in this section."
 
 TEXT:
 {text}
 
-CHARACTERS:"""
+CHARACTER ANALYSIS:"""
 
     # If preferring Groq and it's available, call directly with multi-model fallback
     if prefer_groq and st.secrets.get("GROQ_API_KEY", ""):
